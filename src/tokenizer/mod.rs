@@ -1,9 +1,23 @@
 use std::fmt::Debug;
+use ::input::{Pos, Range};
+use ::error::ParseError;
 
-#[derive(Debug, PartialEq)]
+pub mod basic;
+
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Token {
-    String(String),
-    Number(f64),
+    // Number parts
+    Sign(bool),
+    Number(Range),
+    Dot,
+    Exponent,
+
+    // String parts
+    Quote,
+    StringSource(Range),
+    StringSingle(u8),
+
+    // Rest
     Boolean(bool),
     Null,
     ObjectOpen,
@@ -12,11 +26,19 @@ pub enum Token {
     ArrayClose,
     Comma,
     Colon,
+
+    // Special
     Eof,
 }
 
+pub struct TokenSpan{
+    pub token: Token,
+    pub span: Range,
+}
+
 pub trait Tokenizer: Debug {
-    fn token(&mut self) -> Token;
+    fn token(&mut self) -> Result<Token, ParseError>;
+    fn position(&self) -> Pos;
 }
 
 #[derive(Debug)]
@@ -33,7 +55,11 @@ impl TestTokenStream {
 }
 
 impl Tokenizer for TestTokenStream {
-    fn token(&mut self) -> Token {
-        self.tokens.pop().unwrap()
+    fn token(&mut self) -> Result<Token, ParseError> {
+        Ok(self.tokens.pop().unwrap())
+    }
+
+    fn position(&self) -> Pos {
+        self.tokens.len().into()
     }
 }

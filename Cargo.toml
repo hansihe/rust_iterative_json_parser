@@ -3,4 +3,8 @@ name = "json_test"
 version = "0.1.0"
 authors = ["HansiHE <hansihe@hansihe.com>"]
 
+[lib]
+name = "iterative_json_parser"
+src = "lib.rs"
+
 [dependencies]
