@@ -131,7 +131,7 @@ impl TokenizerState {
     ///    parse error.
     /// 3. We got the bail signal from the source. We store the current
     ///    position in the literal so that we can pick up in the next call.
-    fn do_lit<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    fn do_lit<Src, Snk>(&mut self, source: &mut Src, _sink: &mut Snk) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
         let token = match self.state {
             TokenState::Lit(ref mut data, ref mut curr_pos, ref token) => {
 
@@ -147,7 +147,7 @@ impl TokenizerState {
 
                         // We got some unexpected character.
                         // Return a parse error.
-                        Ok(character) =>
+                        Ok(_) =>
                             return Err(ParseError::Unexpected(source.position())),
 
                         // We reached EOF.
@@ -178,7 +178,7 @@ impl TokenizerState {
     }
 
     // Continues processing on a string value in the JSON.
-    fn do_str<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    fn do_str<Src, Snk>(&mut self, source: &mut Src, _sink: &mut Snk) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
         match self.state {
             TokenState::String(ref mut start, ref mut string_state) => {
                 loop {
@@ -215,22 +215,30 @@ impl TokenizerState {
                         // Skip and emit a range when we reach something else.
                         (StringState::None, Ok(character)) => {
                             let length = UTF8_CHAR_WIDTH[character as usize];
+                            // TODO: OPT: Check characters inline
                             if length == 0 {
                                 return Err(ParseError::Unexpected(source.position()));
                             } else if length > 1 {
-                                *string_state = StringState::Codepoint(length-1);
+                                *string_state = StringState::Codepoint(length-2);
                             }
                             source.skip(1);
                         },
 
+                        // We are in the middle of reading a unicode codepoint.
+                        // Validate the next characters.
                         (StringState::Codepoint(num_left), Ok(character)) => {
                             let valid = (character & 0b11000000) == 0b10000000;
                             if valid {
-                                if num_left == 1 {
-                                    *string_state = StringState::None;
-                                } else {
-                                    *string_state = StringState::Codepoint(num_left - 1);
-                                }
+                                // TODO: OPT: Use enum variants to guarantee exhaustion
+                                // without catch all branch?
+                                *string_state = match num_left {
+                                    0 => StringState::None,
+                                    1 => StringState::Codepoint(0),
+                                    2 => StringState::Codepoint(1),
+                                    3 => StringState::Codepoint(2),
+                                    4 => StringState::Codepoint(3),
+                                    _ => unreachable!(),
+                                };
                                 source.skip(1);
                             } else {
                                 return Err(ParseError::Unexpected(source.position()));
@@ -239,56 +247,31 @@ impl TokenizerState {
 
                         // The last character was a backslash.
                         // We should expect an escaped character.
-                        (StringState::StartEscape, Ok(b'"')) => {
+                        (StringState::StartEscape, Ok(b'"'))
+                            | (StringState::StartEscape, Ok(b'\\'))
+                            | (StringState::StartEscape, Ok(b'/')) => {
                             *start = source.position();
                             *string_state = StringState::None;
                             source.skip(1);
-                        },
-                        (StringState::StartEscape, Ok(b'\\')) => {
-                            *start = source.position();
-                            *string_state = StringState::None;
-                            source.skip(1);
-                        },
-                        (StringState::StartEscape, Ok(b'/')) => {
-                            *start = source.position();
-                            *string_state = StringState::None;
-                            source.skip(1);
-                        },
-                        (StringState::StartEscape, Ok(b'b')) => {
-                            *string_state = StringState::None;
-                            source.skip(1);
-                            *start = source.position();
-                            return Ok(Token::StringSingle(0x62));
-                        },
-                        (StringState::StartEscape, Ok(b'f')) => {
-                            *string_state = StringState::None;
-                            source.skip(1);
-                            *start = source.position();
-                            return Ok(Token::StringSingle(0x66));
-                        },
-                        (StringState::StartEscape, Ok(b'n')) => {
-                            *string_state = StringState::None;
-                            source.skip(1);
-                            *start = source.position();
-                            return Ok(Token::StringSingle(b'\n' as u8));
-                        },
-                        (StringState::StartEscape, Ok(b'r')) => {
-                            *string_state = StringState::None;
-                            source.skip(1);
-                            *start = source.position();
-                            return Ok(Token::StringSingle('\r' as u8));
-                        },
-                        (StringState::StartEscape, Ok(b't')) => {
-                            *string_state = StringState::None;
-                            source.skip(1);
-                            *start = source.position();
-                            return Ok(Token::StringSingle('\t' as u8));
                         },
                         (StringState::StartEscape, Ok(b'u')) => {
                             *string_state = StringState::UnicodeEscape(4, 0);
                             source.skip(1);
                         },
-                        (StringState::StartEscape, Ok(_)) => unimplemented!(),
+                        (StringState::StartEscape, Ok(character)) => {
+                            let escaped = match character {
+                                b'b' => 0x62,
+                                b'f' => 0x66,
+                                b'n' => b'\n',
+                                b'r' => b'\r',
+                                b't' => b'\t',
+                                _ => return Err(ParseError::Unexpected(source.position())),
+                            };
+                            *string_state = StringState::None;
+                            source.skip(1);
+                            *start = source.position();
+                            return Ok(Token::StringSingle(escaped));
+                        }
 
                         (StringState::UnicodeEscape(ref mut count, ref mut codepoint),
                          Ok(character)) => {
@@ -326,7 +309,7 @@ impl TokenizerState {
         Ok(Token::Quote)
     }
 
-    fn do_num<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<Token, <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn do_num<Src, Snk>(&mut self, source: &mut Src, _sink: &mut Snk) -> PResult<Token, <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         match self.state {
             TokenState::Number(start) => {
                 loop {
