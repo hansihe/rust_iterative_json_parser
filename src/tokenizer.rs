@@ -37,7 +37,7 @@ pub enum Token {
     Quote,
     StringSource(Range),
     StringSingle(u8),
-    StringCodepoint(u32),
+    StringCodepoint(char),
 
     // Rest
     Boolean(bool),
@@ -90,10 +90,10 @@ impl TokenizerState {
 
     fn skip_whitespace<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         while match source.peek_char() {
-            Ok(' ') => true,
-            Ok('\t') => true,
-            Ok('\n') => true,
-            Ok('\r') => true,
+            Ok(b' ') => true,
+            Ok(b'\t') => true,
+            Ok(b'\n') => true,
+            Ok(b'\r') => true,
             Ok(_) => false,
             Err(SourceError::Bail(bail)) => return Err(ParseError::SourceBail(bail)),
             Err(SourceError::Eof) => return Err(ParseError::Eof),
@@ -101,7 +101,7 @@ impl TokenizerState {
         Ok(())
     }
 
-    fn read_char<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<char, <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn read_char<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<u8, <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         match source.peek_char() {
             Ok(character) => {
                 source.skip(1);
@@ -138,13 +138,11 @@ impl TokenizerState {
                 // Go forwards from the position where we left off
                 // until the end of the literal string.
                 for pos in *curr_pos..data.len() {
-                    let pos_char = data[pos] as char;
-
                     match source.peek_char() {
 
                         // We matched a single character exactly.
                         // Keep going.
-                        Ok(character) if character == pos_char =>
+                        Ok(character) if character == data[pos] =>
                             source.skip(1),
 
                         // We got some unexpected character.
@@ -181,7 +179,7 @@ impl TokenizerState {
 
     // Continues processing on a string value in the JSON.
     fn do_str<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
-        let token = match self.state {
+        match self.state {
             TokenState::String(ref mut start, ref mut string_state) => {
                 loop {
                     match (*string_state, source.peek_char()) {
@@ -189,7 +187,7 @@ impl TokenizerState {
                         // We reached the end of the string (unescaped quote).
                         // Return the last part of the string now, quote token
                         // next time.
-                        (StringState::None, Ok('"')) => {
+                        (StringState::None, Ok(b'"')) => {
                             let range = Range::new(*start, source.position());
                             *start = source.position();
 
@@ -204,7 +202,7 @@ impl TokenizerState {
 
                         // Got a backslash, emit the string part we have and
                         // expect something escaped next.
-                        (StringState::None, Ok('\\')) => {
+                        (StringState::None, Ok(b'\\')) => {
                             let range = Range::new(*start, source.position());
 
                             *string_state = StringState::StartEscape;
@@ -215,58 +213,78 @@ impl TokenizerState {
 
                         // Normal characters.
                         // Skip and emit a range when we reach something else.
-                        (StringState::None, Ok(_)) => {
+                        (StringState::None, Ok(character)) => {
+                            let length = UTF8_CHAR_WIDTH[character as usize];
+                            if length == 0 {
+                                return Err(ParseError::Unexpected(source.position()));
+                            } else if length > 1 {
+                                *string_state = StringState::Codepoint(length-1);
+                            }
                             source.skip(1);
+                        },
+
+                        (StringState::Codepoint(num_left), Ok(character)) => {
+                            let valid = (character & 0b11000000) == 0b10000000;
+                            if valid {
+                                if num_left == 1 {
+                                    *string_state = StringState::None;
+                                } else {
+                                    *string_state = StringState::Codepoint(num_left - 1);
+                                }
+                                source.skip(1);
+                            } else {
+                                return Err(ParseError::Unexpected(source.position()));
+                            }
                         },
 
                         // The last character was a backslash.
                         // We should expect an escaped character.
-                        (StringState::StartEscape, Ok('"')) => {
+                        (StringState::StartEscape, Ok(b'"')) => {
                             *start = source.position();
                             *string_state = StringState::None;
                             source.skip(1);
                         },
-                        (StringState::StartEscape, Ok('\\')) => {
+                        (StringState::StartEscape, Ok(b'\\')) => {
                             *start = source.position();
                             *string_state = StringState::None;
                             source.skip(1);
                         },
-                        (StringState::StartEscape, Ok('/')) => {
+                        (StringState::StartEscape, Ok(b'/')) => {
                             *start = source.position();
                             *string_state = StringState::None;
                             source.skip(1);
                         },
-                        (StringState::StartEscape, Ok('b')) => {
+                        (StringState::StartEscape, Ok(b'b')) => {
                             *string_state = StringState::None;
                             source.skip(1);
                             *start = source.position();
                             return Ok(Token::StringSingle(0x62));
                         },
-                        (StringState::StartEscape, Ok('f')) => {
+                        (StringState::StartEscape, Ok(b'f')) => {
                             *string_state = StringState::None;
                             source.skip(1);
                             *start = source.position();
                             return Ok(Token::StringSingle(0x66));
                         },
-                        (StringState::StartEscape, Ok('n')) => {
+                        (StringState::StartEscape, Ok(b'n')) => {
                             *string_state = StringState::None;
                             source.skip(1);
                             *start = source.position();
-                            return Ok(Token::StringSingle('\n' as u8));
+                            return Ok(Token::StringSingle(b'\n' as u8));
                         },
-                        (StringState::StartEscape, Ok('r')) => {
+                        (StringState::StartEscape, Ok(b'r')) => {
                             *string_state = StringState::None;
                             source.skip(1);
                             *start = source.position();
                             return Ok(Token::StringSingle('\r' as u8));
                         },
-                        (StringState::StartEscape, Ok('t')) => {
+                        (StringState::StartEscape, Ok(b't')) => {
                             *string_state = StringState::None;
                             source.skip(1);
                             *start = source.position();
                             return Ok(Token::StringSingle('\t' as u8));
                         },
-                        (StringState::StartEscape, Ok('u')) => {
+                        (StringState::StartEscape, Ok(b'u')) => {
                             *string_state = StringState::UnicodeEscape(4, 0);
                             source.skip(1);
                         },
@@ -279,9 +297,9 @@ impl TokenizerState {
 
                             let byte = character as u8;
                             match character {
-                                'A'...'F' => *codepoint |= (byte - b'A' + 10) as u32,
-                                'a'...'f' => *codepoint |= (byte - b'a' + 10) as u32,
-                                '0'...'9' => *codepoint |= (byte - b'0') as u32,
+                                b'A'...b'F' => *codepoint |= (byte - b'A' + 10) as u32,
+                                b'a'...b'f' => *codepoint |= (byte - b'a' + 10) as u32,
+                                b'0'...b'9' => *codepoint |= (byte - b'0') as u32,
                                 _ => return Err(ParseError::Unexpected(source.position())),
                             }
 
@@ -289,7 +307,7 @@ impl TokenizerState {
                             if *count == 0 {
                                 *string_state = StringState::None;
                                 *start = source.position();
-                                return Ok(Token::StringCodepoint(*codepoint));
+                                return Ok(Token::StringCodepoint(::std::char::from_u32(*codepoint).unwrap()));
                             }
                             *string_state = StringState::UnicodeEscape(*count, *codepoint);
                         }
@@ -315,7 +333,7 @@ impl TokenizerState {
                     match source.peek_char() {
 
                         // Walk through numbers
-                        Ok('0'...'9') => source.skip(1),
+                        Ok(b'0'...b'9') => source.skip(1),
 
                         // ... any other character breaks
                         Ok(_) => break,
@@ -344,26 +362,26 @@ impl TokenizerState {
                 self.skip_whitespace(source, sink)?;
 
                 match self.read_char(source, sink)? {
-                    '{' => Ok(Token::ObjectOpen),
-                    '}' => Ok(Token::ObjectClose),
-                    '[' => Ok(Token::ArrayOpen),
-                    ']' => Ok(Token::ArrayClose),
-                    ',' => Ok(Token::Comma),
-                    ':' => Ok(Token::Colon),
-                    'e' => Ok(Token::Exponent),
-                    'E' => Ok(Token::Exponent),
-                    '.' => Ok(Token::Dot),
-                    '-' => Ok(Token::Sign(false)),
-                    '+' => Ok(Token::Sign(true)),
-                    't' => self.lit(source, sink, b"rue", Token::Boolean(true)),
-                    'f' => self.lit(source, sink, b"alse", Token::Boolean(false)),
-                    'n' => self.lit(source, sink, b"ull", Token::Null),
-                    '0'...'9' => {
+                    b'{' => Ok(Token::ObjectOpen),
+                    b'}' => Ok(Token::ObjectClose),
+                    b'[' => Ok(Token::ArrayOpen),
+                    b']' => Ok(Token::ArrayClose),
+                    b',' => Ok(Token::Comma),
+                    b':' => Ok(Token::Colon),
+                    b'e' => Ok(Token::Exponent),
+                    b'E' => Ok(Token::Exponent),
+                    b'.' => Ok(Token::Dot),
+                    b'-' => Ok(Token::Sign(false)),
+                    b'+' => Ok(Token::Sign(true)),
+                    b't' => self.lit(source, sink, b"rue", Token::Boolean(true)),
+                    b'f' => self.lit(source, sink, b"alse", Token::Boolean(false)),
+                    b'n' => self.lit(source, sink, b"ull", Token::Null),
+                    b'0'...b'9' => {
                         let start = source.position().0 - 1;
                         self.state = TokenState::Number(start.into());
                         self.do_num(source, sink)
                     },
-                    '"' => {
+                    b'"' => {
                         self.state = TokenState::String(source.position(),
                                                         StringState::None);
                         Ok(Token::Quote)
@@ -384,7 +402,9 @@ impl TokenizerState {
     //            TokenState::None => {
     //                self.skip_whitespace(source, sink)?;
 
-    //                match self.read_char()
+    //                match self.read_char(source, sink)? {
+    //                    '{'
+    //                }
     //            }
     //        }
     //    }

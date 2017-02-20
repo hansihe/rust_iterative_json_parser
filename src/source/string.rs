@@ -32,14 +32,14 @@ impl Source for VecSource {
         *self.pos.lock().unwrap() += num;
     }
 
-    fn peek_char(&self) -> Result<char, SourceError<Self::Bail>> {
+    fn peek_char(&self) -> Result<u8, SourceError<Self::Bail>> {
         let mut pos = self.pos.lock().unwrap();
 
         if *pos >= self.vec.len() {
             Err(SourceError::Eof)
         } else {
-            let character = self.vec[*pos] as char;
-            if character == '&' {
+            let character = self.vec[*pos];
+            if character == b'&' {
                 *pos += 1;
                 Err(SourceError::Bail(()))
             } else {

@@ -14,5 +14,5 @@ pub trait Source {
 
     fn position(&self) -> Pos;
     fn skip(&mut self, num: usize);
-    fn peek_char(&self) -> Result<char, SourceError<Self::Bail>>;
+    fn peek_char(&self) -> Result<u8, SourceError<Self::Bail>>;
 }

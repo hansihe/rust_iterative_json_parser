@@ -16,7 +16,7 @@ pub trait Sink {
     fn start_string(&mut self);
     fn append_string_range(&mut self, string: Range);
     fn append_string_single(&mut self, character: u8);
-    fn append_string_codepoint(&mut self, codepoint: u32);
+    fn append_string_codepoint(&mut self, codepoint: char);
     fn finalize_string(&mut self);
 
     fn finalize_array(&mut self);

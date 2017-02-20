@@ -84,7 +84,7 @@ impl Sink for EnumSink {
     fn append_string_single(&mut self, character: u8) {
         self.current_string.push(character);
     }
-    fn append_string_codepoint(&mut self, codepoint: u32) {unreachable!();}
+    fn append_string_codepoint(&mut self, codepoint: char) {unreachable!();}
     fn finalize_string(&mut self) {
         let mut done_string = Vec::new();
         ::std::mem::swap(&mut done_string, &mut self.current_string);

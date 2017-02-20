@@ -38,7 +38,7 @@ impl Sink for PrintSink {
     fn append_string_single(&mut self, character: u8) {
         println!("append_string_single {:?}", character)
     }
-    fn append_string_codepoint(&mut self, codepoint: u32) {
+    fn append_string_codepoint(&mut self, codepoint: char) {
         println!("append_string_codepoint {:?}", codepoint)
     }
     fn finalize_string(&mut self) {
