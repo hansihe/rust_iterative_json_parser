@@ -1,4 +1,4 @@
-use super::{ParserSink, NumberData};
+use super::{Sink, NumberData};
 use ::input::Range;
 
 #[derive(Debug, PartialEq)]
@@ -46,7 +46,8 @@ impl EnumSink {
     }
 }
 
-impl ParserSink for EnumSink {
+impl Sink for EnumSink {
+    type Bail = ();
     fn push_map(&mut self) { self.stack.push(Json::Object(vec![])) }
     fn push_array(&mut self) { self.stack.push(Json::Array(vec![])) }
     fn push_number(&mut self, number: NumberData) {
@@ -55,8 +56,7 @@ impl ParserSink for EnumSink {
         if number.sign { out.push('+'); }
         else { out.push('-'); }
 
-        if let Some(range) = number.integer { out.push_str(self.range_to_str(range)); }
-        else { unreachable!(); }
+        out.push_str(self.range_to_str(number.integer));
 
         out.push('.');
 
@@ -84,7 +84,7 @@ impl ParserSink for EnumSink {
     fn append_string_single(&mut self, character: u8) {
         self.current_string.push(character);
     }
-    fn append_string_multi(&mut self, characters: Vec<u8>) {unreachable!();}
+    fn append_string_codepoint(&mut self, codepoint: u32) {unreachable!();}
     fn finalize_string(&mut self) {
         let mut done_string = Vec::new();
         ::std::mem::swap(&mut done_string, &mut self.current_string);

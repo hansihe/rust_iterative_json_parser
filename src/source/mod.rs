@@ -4,8 +4,15 @@ use ::tokenizer::Token;
 
 pub mod string;
 
+pub enum SourceError<Bail> {
+    Bail(Bail),
+    Eof,
+}
+
 pub trait Source {
+    type Bail;
+
     fn position(&self) -> Pos;
     fn skip(&mut self, num: usize);
-    fn peek_char(&self) -> PResult<char>;
+    fn peek_char(&self) -> Result<char, SourceError<Self::Bail>>;
 }

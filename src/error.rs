@@ -1,20 +1,14 @@
 use ::input::Pos;
+use ::tokenizer::Token;
 
 #[derive(Debug, PartialEq)]
-pub enum ParseError {
-    UnexpectedChar {
-        pos: Pos,
-        expected: Option<char>,
-    },
-    UnexpectedToken {
-        pos: Pos,
-        message: &'static str,
-    },
-    UnexpectedEof,
-    ExpectedEof,
+pub enum ParseError<SourceBail, SinkBail> {
+    Unexpected(Pos),
+    UnexpectedToken(Pos, Token),
 
     // Indicators from Source.
     // Does not actually signal errors.
     Eof,
-    Bail,
+    SourceBail(SourceBail),
+    SinkBail(SinkBail),
 }

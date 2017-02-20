@@ -1,23 +1,20 @@
 extern crate iterative_json_parser;
 use iterative_json_parser::source::string::VecSource;
-use iterative_json_parser::tokenizer::basic::BasicTokenizer;
 use iterative_json_parser::parser::Parser;
 use iterative_json_parser::error::ParseError;
 
 use iterative_json_parser::sink::into_enum::{EnumSink, Json};
-use Json as J;
 
 fn parse_to_enum(data: &'static str) -> Result<Json, ParseError> {
     let data_bytes = data.as_bytes();
 
-    let source = VecSource::new(data_bytes.to_vec());
-    let tokenizer = BasicTokenizer::new(source);
-    let mut parser = Parser::new(tokenizer);
-
+    let mut source = VecSource::new(data_bytes.to_vec());
     let mut sink = EnumSink::new(data_bytes);
 
+    let mut parser = Parser::new();
+
     loop {
-        match parser.parse(&mut sink) {
+        match parser.parse(&mut source, &mut sink) {
             Ok(()) => return Ok(sink.to_result()),
             Err(ParseError::Bail) => continue,
             Err(err) => return Err(err),
@@ -103,12 +100,13 @@ fn simple_bails() {
 /// Test a more complete example with many types.
 #[test]
 fn full_parse() {
-    let input = r#"{"foo": [null, true, false], "bar": -1.23e-7, "baz": "woo\""}"#;
+    let input = r#"{"foo": [null, true, false], "woo": [], "bar": -1.23e-7, "baz": "woo\""}"#;
 
     let result = parse_to_enum(input);
 
     let expected = o!{
         "foo" => a![v!(null), v!(true), v!(false)],
+        "woo" => a![],
         "bar" => n!("-1.23e-7"),
         "baz" => s!("woo\"")
     };

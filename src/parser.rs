@@ -1,6 +1,6 @@
 use ::PResult;
-use ::tokenizer::{ Token, Tokenizer };
-use ::sink::ParserSink;
+use ::tokenizer::{ Token, TokenizerState };
+use ::sink::Sink;
 use ::error::ParseError;
 use ::input::Range;
 use ::source::Source;
@@ -32,7 +32,7 @@ enum NumberState {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumberData {
     pub sign: bool,
-    pub integer: Option<Range>,
+    pub integer: Range,
     pub decimal: Option<Range>,
     pub exponent_sign: bool,
     pub exponent: Option<Range>,
@@ -41,7 +41,7 @@ impl Default for NumberData {
     fn default() -> Self {
         NumberData {
             sign: true,
-            integer: None,
+            integer: Range::new(0.into(), 0.into()),
             decimal: None,
             exponent_sign: true,
             exponent: None,
@@ -59,8 +59,8 @@ enum State {
 }
 
 #[derive(Debug)]
-pub struct Parser<T> where T: Tokenizer {
-    input: T,
+pub struct ParserState {
+    tokenizer: TokenizerState,
     stack: Vec<State>,
     started: bool,
 }
@@ -72,16 +72,17 @@ enum Transition {
     Nothing,
 }
 
-impl<T> Parser<T> where T: Tokenizer {
-    pub fn new(tokenizer: T) -> Self {
-        Parser {
-            input: tokenizer,
+impl ParserState {
+
+    pub fn new() -> Self {
+        ParserState {
+            tokenizer: TokenizerState::new(),
             stack: vec![State::Root],
             started: false,
         }
     }
 
-    fn open_type<S>(&mut self, sink: &mut S, token: Token) -> PResult<()> where S: ParserSink {
+    fn open_type<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         match token {
 
             // Quote signals start of a string.
@@ -100,7 +101,7 @@ impl<T> Parser<T> where T: Tokenizer {
             },
             Token::Number(num) => {
                 let mut nd = NumberData::default();
-                nd.integer = Some(num);
+                nd.integer = num;
                 self.stack.push(State::Number(NumberState::DotExponentEnd, nd));
                 Ok(())
             },
@@ -128,28 +129,25 @@ impl<T> Parser<T> where T: Tokenizer {
         }
     }
 
-    pub fn parse<S>(&mut self, sink: &mut S) -> PResult<()> where S: ParserSink {
+    pub fn parse<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         loop {
             let single_state = self.stack.len() == 1;
             let started = self.started;
 
-            let token = match self.input.token() {
+            let token = match self.tokenizer.token(source, sink) {
                 Ok(token) if !started || !single_state => token,
-                Ok(token) => return Err(ParseError::ExpectedEof),
+                Ok(token) => return Err(ParseError::UnexpectedToken(source.position(), token)),
                 Err(ParseError::Eof) if started && single_state => return Ok(()),
-                Err(ParseError::Bail) => return Err(ParseError::Bail),
                 Err(err) => return Err(err),
             };
 
             self.started = true;
 
-            self.step(sink, token);
+            self.step(source, sink, token)?;
         }
     }
 
-    fn step<S>(&mut self, sink: &mut S, token: Token) -> PResult<()>
-        where S: ParserSink {
-        println!("{:?}", token);
+    fn step<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
 
         // Matches on current state, and decides on a state transition.
         let transition = match self.stack.last_mut().unwrap() {
@@ -157,8 +155,12 @@ impl<T> Parser<T> where T: Tokenizer {
             &mut State::Root => Transition::ReadValue,
 
             &mut State::Array(ref mut arr_state @ ArrayState::Start) => {
-                *arr_state = ArrayState::CommaEnd;
-                Transition::ReadValue
+                if token == Token::ArrayClose {
+                    Transition::PopStack
+                } else {
+                    *arr_state = ArrayState::CommaEnd;
+                    Transition::ReadValue
+                }
             }
 
             &mut State::Array(ref mut arr_state @ ArrayState::CommaEnd) => {
@@ -172,7 +174,7 @@ impl<T> Parser<T> where T: Tokenizer {
                         sink.finalize_array();
                         Transition::PopStack
                     },
-                    _ => panic!("unexpected"),
+                    _ => return Err(ParseError::UnexpectedToken(source.position(), token)),
                 }
             }
 
@@ -187,10 +189,7 @@ impl<T> Parser<T> where T: Tokenizer {
 
             &mut State::Object(ref mut obj_state @ ObjectState::Key) => {
                 if token != Token::Colon {
-                    return Err(ParseError::UnexpectedToken {
-                        pos: self.input.position(),
-                        message: "expected :",
-                    });
+                    panic!("unexpected Colon");
                 }
                 *obj_state = ObjectState::Colon;
                 Transition::Nothing
@@ -231,6 +230,10 @@ impl<T> Parser<T> where T: Tokenizer {
                         sink.append_string_single(character);
                         Transition::Nothing
                     },
+                    Token::StringCodepoint(codepoint) => {
+                        sink.append_string_codepoint(codepoint);
+                        Transition::Nothing
+                    },
                     token => panic!("{:?}", token),
                 }
             }
@@ -241,7 +244,7 @@ impl<T> Parser<T> where T: Tokenizer {
                         match token {
                             Token::Number(num) => {
                                 *num_state = NumberState::DotExponentEnd;
-                                data.integer = Some(num);
+                                data.integer = num;
                                 Transition::Nothing
                             },
                             _ => panic!("unexpected")
@@ -317,7 +320,7 @@ impl<T> Parser<T> where T: Tokenizer {
         // Matches on state transition, makes change on stack.
         match transition {
             Transition::ReadValue => {
-                self.open_type(sink, token)
+                self.open_type(source, sink, token)
             },
             Transition::PopStack => {
                 self.stack.pop().unwrap();
@@ -325,7 +328,7 @@ impl<T> Parser<T> where T: Tokenizer {
             },
             Transition::PopRedo => {
                 self.stack.pop().unwrap();
-                self.step(sink, token)
+                self.step(source, sink, token)
             },
             Transition::Nothing => Ok(()),
         }

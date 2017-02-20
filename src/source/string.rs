@@ -1,4 +1,4 @@
-use super::Source;
+use super::{Source, SourceError};
 use ::PResult;
 use ::input::Pos;
 use ::error::ParseError;
@@ -22,6 +22,7 @@ impl VecSource {
 }
 
 impl Source for VecSource {
+    type Bail = ();
 
     fn position(&self) -> Pos {
         (*self.pos.lock().unwrap()).into()
@@ -31,16 +32,16 @@ impl Source for VecSource {
         *self.pos.lock().unwrap() += num;
     }
 
-    fn peek_char(&self) -> PResult<char> {
+    fn peek_char(&self) -> Result<char, SourceError<Self::Bail>> {
         let mut pos = self.pos.lock().unwrap();
 
         if *pos >= self.vec.len() {
-            Err(ParseError::Eof)
+            Err(SourceError::Eof)
         } else {
             let character = self.vec[*pos] as char;
             if character == '&' {
                 *pos += 1;
-                Err(ParseError::Bail)
+                Err(SourceError::Bail(()))
             } else {
                 Ok(character)
             }

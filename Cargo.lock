@@ -1,4 +1,4 @@
 [root]
-name = "json_test"
+name = "iterative_json_parser"
 version = "0.1.0"
 
