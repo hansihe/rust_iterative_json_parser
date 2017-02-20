@@ -18,14 +18,14 @@ pub enum Json {
 /// Sink that puts all values into an enum.
 /// Intended for testing, copies like crazy.
 #[derive(Debug)]
-pub struct EnumSink {
+pub struct EnumSink<'a> {
     stack: Vec<Json>,
-    source: &'static [u8],
+    source: &'a [u8],
     current_string: Vec<u8>,
 }
 
-impl EnumSink {
-    pub fn new(source: &'static [u8]) -> EnumSink {
+impl<'a> EnumSink<'a> {
+    pub fn new(source: &'a [u8]) -> EnumSink {
         EnumSink {
             stack: vec![],
             source: source,
@@ -33,7 +33,7 @@ impl EnumSink {
         }
     }
 
-    fn range_to_str<'a>(&'a mut self, range: Range) -> &'a str {
+    fn range_to_str<'b>(&'b mut self, range: Range) -> &'b str {
         let raw = &self.source[(range.start)..(range.end)];
         ::std::str::from_utf8(raw).unwrap()
     }
@@ -46,7 +46,7 @@ impl EnumSink {
     }
 }
 
-impl Sink for EnumSink {
+impl<'a> Sink for EnumSink<'a> {
     type Bail = ();
     fn push_map(&mut self) { self.stack.push(Json::Object(vec![])) }
     fn push_array(&mut self) { self.stack.push(Json::Array(vec![])) }

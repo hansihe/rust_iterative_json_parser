@@ -2,20 +2,23 @@ extern crate iterative_json_parser;
 use iterative_json_parser::source::string::VecSource;
 use iterative_json_parser::Parser;
 use iterative_json_parser::ParseError;
+use iterative_json_parser::SS;
 
 use iterative_json_parser::sink::into_enum::{EnumSink, Json};
 
 fn parse_to_enum(data: &'static str) -> Result<Json, ParseError<(), ()>> {
     let data_bytes = data.as_bytes();
 
-    let mut source = VecSource::new(data_bytes.to_vec());
-    let mut sink = EnumSink::new(data_bytes);
+    let mut ss = SS {
+        source: VecSource::new(data_bytes.to_vec()),
+        sink: EnumSink::new(data_bytes),
+    };
 
     let mut parser = Parser::new();
 
     loop {
-        match parser.parse(&mut source, &mut sink) {
-            Ok(()) => return Ok(sink.to_result()),
+        match parser.parse(&mut ss) {
+            Ok(()) => return Ok(ss.sink.to_result()),
             Err(ParseError::SourceBail(_)) => continue,
             Err(err) => return Err(err),
         }
@@ -83,43 +86,43 @@ fn numbers() {
     assert_eq!(result, Ok(expected));
 }
 
-///// Bail should work at any point in the input sequence.
-///// Bails are represented by the ampersand character, make sure it can
-///// occur at all points in the input sequence.
-//#[test]
-//fn simple_bails() {
-//    let input = r#"&{&"f&oo"&:& &tr&ue&,& &"bar": &-&1&2&.&3&e&-&5&}&"#;
-//    let result = parse_to_enum(input);
-//    let expected = o!{
-//        "f&oo" => v!(true),
-//        "bar" => n!("-1&2&.3&e-5&")
-//    };
-//    assert_eq!(result, Ok(expected));
-//}
-//
-///// Test a more complete example with many types.
-//#[test]
-//fn full_parse() {
-//    let input = r#"{"foo": [null, true, false], "woo": [], "bar": -1.23e-7, "baz": "woo\""}"#;
-//
-//    let result = parse_to_enum(input);
-//
-//    let expected = o!{
-//        "foo" => a![v!(null), v!(true), v!(false)],
-//        "woo" => a![],
-//        "bar" => n!("-1.23e-7"),
-//        "baz" => s!("woo\"")
-//    };
-//
-//    assert_eq!(result, Ok(expected));
-//}
-//
-///// When we finish reading in a single value, we should expect EOF.
-///// Make sure a new top level value can't be started once we finish
-///// reading one.
-//#[test]
-//fn expect_eof() {
-//    let input = r#"{"woo": false}{"#;
-//    let result = parse_to_enum(input);
-//    //assert_eq!(result, Err(ParseError::Expected(_)));
-//}
+/// Bail should work at any point in the input sequence.
+/// Bails are represented by the ampersand character, make sure it can
+/// occur at all points in the input sequence.
+#[test]
+fn simple_bails() {
+    let input = r#"&{&"f&oo"&:& &tr&ue&,& &"bar": &-&1&2&.&3&e&-&5&}&"#;
+    let result = parse_to_enum(input);
+    let expected = o!{
+        "f&oo" => v!(true),
+        "bar" => n!("-1&2&.3&e-5&")
+    };
+    assert_eq!(result, Ok(expected));
+}
+
+/// Test a more complete example with many types.
+#[test]
+fn full_parse() {
+    let input = r#"{"foo": [null, true, false], "woo": [], "bar": -1.23e-7, "baz": "woo\""}"#;
+
+    let result = parse_to_enum(input);
+
+    let expected = o!{
+        "foo" => a![v!(null), v!(true), v!(false)],
+        "woo" => a![],
+        "bar" => n!("-1.23e-7"),
+        "baz" => s!("woo\"")
+    };
+
+    assert_eq!(result, Ok(expected));
+}
+
+/// When we finish reading in a single value, we should expect EOF.
+/// Make sure a new top level value can't be started once we finish
+/// reading one.
+#[test]
+fn expect_eof() {
+    let input = r#"{"woo": false}{"#;
+    let result = parse_to_enum(input);
+    //assert_eq!(result, Err(ParseError::Expected(_)));
+}

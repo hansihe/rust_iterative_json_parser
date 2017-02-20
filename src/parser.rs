@@ -1,5 +1,5 @@
 use ::PResult;
-use ::tokenizer::{ Token, TokenizerState };
+use ::tokenizer::{ Token, TokenizerState, SS };
 use ::sink::Sink;
 use ::error::ParseError;
 use ::input::Range;
@@ -82,13 +82,13 @@ impl ParserState {
         }
     }
 
-    fn open_type<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn open_type<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         match token {
 
             // Quote signals start of a string.
             Token::Quote => {
                 self.stack.push(State::String);
-                sink.start_string();
+                ss.sink.start_string();
                 Ok(())
             },
 
@@ -107,18 +107,18 @@ impl ParserState {
             },
 
             // Literals
-            Token::Boolean(boolean) => { sink.push_bool(boolean); Ok(()) },
-            Token::Null => { sink.push_null(); Ok(()) },
+            Token::Boolean(boolean) => { ss.sink.push_bool(boolean); Ok(()) },
+            Token::Null => { ss.sink.push_null(); Ok(()) },
 
             // Composite objects.
             Token::ObjectOpen => {
                 self.stack.push(State::Object(ObjectState::Start));
-                sink.push_map();
+                ss.sink.push_map();
                 Ok(())
             },
             Token::ArrayOpen => {
                 self.stack.push(State::Array(ArrayState::Start));
-                sink.push_array();
+                ss.sink.push_array();
                 Ok(())
             },
 
@@ -129,25 +129,25 @@ impl ParserState {
         }
     }
 
-    pub fn parse<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn parse<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
         loop {
             let single_state = self.stack.len() == 1;
             let started = self.started;
 
-            let token = match self.tokenizer.token(source, sink) {
+            let token = match self.tokenizer.token(ss) {
                 Ok(token) if !started || !single_state => token,
-                Ok(token) => return Err(ParseError::UnexpectedToken(source.position(), token)),
+                Ok(token) => return Err(ParseError::UnexpectedToken(ss.source.position(), token)),
                 Err(ParseError::Eof) if started && single_state => return Ok(()),
                 Err(err) => return Err(err),
             };
 
             self.started = true;
 
-            self.step(source, sink, token)?;
+            self.step(ss, token)?;
         }
     }
 
-    fn step<Src, Snk>(&mut self, source: &mut Src, sink: &mut Snk, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn step<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
 
         // Matches on current state, and decides on a state transition.
         let transition = match self.stack.last_mut().unwrap() {
@@ -164,17 +164,17 @@ impl ParserState {
             }
 
             &mut State::Array(ref mut arr_state @ ArrayState::CommaEnd) => {
-                sink.pop_into_array();
+                ss.sink.pop_into_array();
                 match token {
                     Token::Comma => {
                         *arr_state = ArrayState::Start;
                         Transition::Nothing
                     },
                     Token::ArrayClose => {
-                        sink.finalize_array();
+                        ss.sink.finalize_array();
                         Transition::PopStack
                     },
-                    _ => return Err(ParseError::UnexpectedToken(source.position(), token)),
+                    _ => return Err(ParseError::UnexpectedToken(ss.source.position(), token)),
                 }
             }
 
@@ -201,7 +201,7 @@ impl ParserState {
             }
 
             &mut State::Object(ref mut arr_state @ ObjectState::CommaEnd) => {
-                sink.pop_into_map();
+                ss.sink.pop_into_map();
 
                 match token {
                     Token::Comma => {
@@ -209,7 +209,7 @@ impl ParserState {
                         Transition::Nothing
                     },
                     Token::ObjectClose => {
-                        sink.finalize_map();
+                        ss.sink.finalize_map();
                         Transition::PopStack
                     },
                     _ => panic!("unexpected"),
@@ -219,19 +219,19 @@ impl ParserState {
             &mut State::String => {
                 match token {
                     Token::Quote => {
-                        sink.finalize_string();
+                        ss.sink.finalize_string();
                         Transition::PopStack
                     },
                     Token::StringSource(range) => {
-                        sink.append_string_range(range);
+                        ss.sink.append_string_range(range);
                         Transition::Nothing
                     },
                     Token::StringSingle(character) => {
-                        sink.append_string_single(character);
+                        ss.sink.append_string_single(character);
                         Transition::Nothing
                     },
                     Token::StringCodepoint(codepoint) => {
-                        sink.append_string_codepoint(codepoint);
+                        ss.sink.append_string_codepoint(codepoint);
                         Transition::Nothing
                     },
                     token => panic!("{:?}", token),
@@ -261,7 +261,7 @@ impl ParserState {
                                 Transition::Nothing
                             }
                             _ => {
-                                sink.push_number(data.clone());
+                                ss.sink.push_number(data.clone());
                                 Transition::PopRedo
                             }
                         }
@@ -283,7 +283,7 @@ impl ParserState {
                                 Transition::Nothing
                             },
                             _ => {
-                                sink.push_number(data.clone());
+                                ss.sink.push_number(data.clone());
                                 Transition::PopRedo
                             }
                         }
@@ -297,7 +297,7 @@ impl ParserState {
                             },
                             Token::Number(num) => {
                                 data.exponent = Some(num);
-                                sink.push_number(data.clone());
+                                ss.sink.push_number(data.clone());
                                 Transition::PopStack
                             },
                             _ => panic!("unexpected"),
@@ -307,7 +307,7 @@ impl ParserState {
                         match token {
                             Token::Number(num) => {
                                 data.exponent = Some(num);
-                                sink.push_number(data.clone());
+                                ss.sink.push_number(data.clone());
                                 Transition::PopStack
                             },
                             _ => panic!("unexpected"),
@@ -320,7 +320,7 @@ impl ParserState {
         // Matches on state transition, makes change on stack.
         match transition {
             Transition::ReadValue => {
-                self.open_type(source, sink, token)
+                self.open_type(ss, token)
             },
             Transition::PopStack => {
                 self.stack.pop().unwrap();
@@ -328,7 +328,7 @@ impl ParserState {
             },
             Transition::PopRedo => {
                 self.stack.pop().unwrap();
-                self.step(source, sink, token)
+                self.step(ss, token)
             },
             Transition::Nothing => Ok(()),
         }

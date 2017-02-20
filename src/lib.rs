@@ -14,3 +14,4 @@ pub use source::{Source, SourceError};
 pub use sink::Sink;
 pub use error::ParseError;
 pub use input::{Range, Pos};
+pub use tokenizer::SS;

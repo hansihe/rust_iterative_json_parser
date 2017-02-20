@@ -7,7 +7,7 @@ use ::std::sync::Mutex;
 #[derive(Debug)]
 pub struct VecSource {
     vec: Vec<u8>,
-    pos: Mutex<usize>,
+    pos: usize,
 }
 
 impl VecSource {
@@ -15,13 +15,52 @@ impl VecSource {
     pub fn new(vec: Vec<u8>) -> VecSource {
         VecSource {
             vec: vec,
-            pos: Mutex::new(0),
+            pos: 0,
         }
     }
 
 }
 
 impl Source for VecSource {
+    type Bail = ();
+
+    fn position(&self) -> Pos {
+        self.pos.into()
+    }
+
+    fn skip(&mut self, num: usize) {
+        self.pos += num;
+    }
+
+    fn peek_char(&self) -> Result<u8, SourceError<Self::Bail>> {
+        if self.pos >= self.vec.len() {
+            Err(SourceError::Eof)
+        } else {
+            let character = self.vec[self.pos];
+            Ok(character)
+        }
+    }
+
+}
+
+#[derive(Debug)]
+pub struct VecSourceB {
+    vec: Vec<u8>,
+    pos: Mutex<usize>,
+}
+
+impl VecSourceB {
+
+    pub fn new(vec: Vec<u8>) -> VecSourceB {
+        VecSourceB {
+            vec: vec,
+            pos: Mutex::new(0),
+        }
+    }
+
+}
+
+impl Source for VecSourceB {
     type Bail = ();
 
     fn position(&self) -> Pos {

@@ -8,3 +8,6 @@ name = "iterative_json_parser"
 src = "lib.rs"
 
 [dependencies]
+
+[profile.release]
+debug = true
