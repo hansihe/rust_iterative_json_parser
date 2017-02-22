@@ -17,10 +17,13 @@ fn parse_to_enum(data: &'static str) -> Result<Json, ParseError<(), ()>> {
     let mut parser = Parser::new();
 
     loop {
-        match parser.parse(&mut ss) {
+        match parser.run(&mut ss) {
             Ok(()) => return Ok(ss.sink.to_result()),
             Err(ParseError::SourceBail(_)) => continue,
-            Err(err) => return Err(err),
+            Err(err) => {
+                println!("Internal state: {:?}", parser);
+                return Err(err);
+            },
         }
     }
 }
