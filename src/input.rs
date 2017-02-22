@@ -22,4 +22,8 @@ impl Range {
         }
     }
 
+    pub fn empty(&self) -> bool {
+        self.start == self.end
+    }
+
 }
