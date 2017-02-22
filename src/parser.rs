@@ -5,21 +5,18 @@ use ::error::ParseError;
 use ::input::Range;
 use ::source::Source;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum ObjectState {
-    Start,
+    // Expect key
+    // Expect colon
+    // Expect value (ReadValue on stack)
+    // Expect comma or end
     Key,
     Colon,
     CommaEnd,
 }
 
-#[derive(Debug)]
-enum ArrayState {
-    Start,
-    CommaEnd,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum NumberState {
     Integer, // Integer
     DotExponentEnd, // '.' or end
@@ -27,6 +24,15 @@ enum NumberState {
     ExponentStartEnd, // 'eE' or end
     ExponentSign, // '-+' or Exponent
     Exponent, // Exponent then end
+}
+impl NumberState {
+    fn can_end(self) -> bool {
+        match self {
+            NumberState::DotExponentEnd => true,
+            NumberState::ExponentStartEnd => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,19 +55,21 @@ impl Default for NumberData {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum State {
     Root,
-    Array(ArrayState),
+    Array,
     Object(ObjectState),
-    Number(NumberState, NumberData),
+    Number(NumberState),
     String,
+    ReadValue,
 }
 
 #[derive(Debug)]
 pub struct ParserState {
-    tokenizer: TokenizerState,
+    //tokenizer: TokenizerState,
     stack: Vec<State>,
+    number_data: NumberData,
     started: bool,
 }
 
@@ -72,266 +80,385 @@ enum Transition {
     Nothing,
 }
 
+macro_rules! unexpected {
+    ($ss:expr) => { Err(ParseError::Unexpected($ss.source.position())) }
+}
+
+fn log_token(token: &str) {
+    //println!("token: {:?}", token);
+}
+
+
 impl ParserState {
 
     pub fn new() -> Self {
         ParserState {
-            tokenizer: TokenizerState::new(),
-            stack: vec![State::Root],
+            //tokenizer: TokenizerState::new(),
+            stack: vec![State::ReadValue],
+            number_data: NumberData::default(),
             started: false,
         }
     }
 
-    fn open_type<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
-        match token {
+    pub fn token_object_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("object_open");
 
-            // Quote signals start of a string.
-            Token::Quote => {
-                self.stack.push(State::String);
-                ss.sink.start_string();
-                Ok(())
-            },
-
-            // Sign signals start of a number.
-            Token::Sign(sign) => {
-                let mut nd = NumberData::default();
-                nd.sign = sign;
-                self.stack.push(State::Number(NumberState::Integer, nd));
-                Ok(())
-            },
-            Token::Number(num) => {
-                let mut nd = NumberData::default();
-                nd.integer = num;
-                self.stack.push(State::Number(NumberState::DotExponentEnd, nd));
-                Ok(())
-            },
-
-            // Literals
-            Token::Boolean(boolean) => { ss.sink.push_bool(boolean); Ok(()) },
-            Token::Null => { ss.sink.push_null(); Ok(()) },
-
-            // Composite objects.
-            Token::ObjectOpen => {
-                self.stack.push(State::Object(ObjectState::Start));
+        match *self.stack.last().unwrap() {
+            State::ReadValue |
+            State::Root => {
+                self.stack.pop().unwrap();
+                self.stack.push(State::Object(ObjectState::Key));
                 ss.sink.push_map();
                 Ok(())
             },
-            Token::ArrayOpen => {
-                self.stack.push(State::Array(ArrayState::Start));
-                ss.sink.push_array();
+            _ => unexpected!(ss),
+        }
+    }
+
+    pub fn token_object_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("object_close");
+
+        match *self.stack.last().unwrap() {
+            //State::Object(ObjectState::Key) => {
+            //    self.stack.pop().unwrap();
+            //    ss.sink.finalize_map();
+            //    Ok(())
+            //},
+            State::Object(ObjectState::CommaEnd) => {
+                self.stack.pop().unwrap();
+                ss.sink.pop_into_map();
+                ss.sink.finalize_map();
                 Ok(())
             },
-
-            Token::ObjectClose => panic!("unexpected }"),
-            Token::ArrayClose => panic!("Unexpected ]"),
-            Token::Eof => panic!("Unexpected EOF"),
-            _ => unreachable!(),
-        }
-    }
-
-    pub fn parse<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
-        loop {
-            let single_state = self.stack.len() == 1;
-            let started = self.started;
-
-            let token = match self.tokenizer.token(ss) {
-                Ok(token) if !started || !single_state => token,
-                Ok(token) => return Err(ParseError::UnexpectedToken(ss.source.position(), token)),
-                Err(ParseError::Eof) if started && single_state => return Ok(()),
-                Err(err) => return Err(err),
-            };
-
-            self.started = true;
-
-            self.step(ss, token)?;
-        }
-    }
-
-    fn step<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, token: Token) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
-
-        // Matches on current state, and decides on a state transition.
-        let transition = match self.stack.last_mut().unwrap() {
-
-            &mut State::Root => Transition::ReadValue,
-
-            &mut State::Array(ref mut arr_state @ ArrayState::Start) => {
-                if token == Token::ArrayClose {
-                    Transition::PopStack
-                } else {
-                    *arr_state = ArrayState::CommaEnd;
-                    Transition::ReadValue
+            State::ReadValue => {
+                self.stack.pop().unwrap();
+                if *self.stack.last().unwrap() != State::Object(ObjectState::Colon) {
+                    return unexpected!(ss);
                 }
-            }
-
-            &mut State::Array(ref mut arr_state @ ArrayState::CommaEnd) => {
-                ss.sink.pop_into_array();
-                match token {
-                    Token::Comma => {
-                        *arr_state = ArrayState::Start;
-                        Transition::Nothing
-                    },
-                    Token::ArrayClose => {
-                        ss.sink.finalize_array();
-                        Transition::PopStack
-                    },
-                    _ => return Err(ParseError::UnexpectedToken(ss.source.position(), token)),
-                }
-            }
-
-            &mut State::Object(ref mut obj_state @ ObjectState::Start) => {
-                if token == Token::ObjectClose {
-                    Transition::PopStack
-                } else {
-                    *obj_state = ObjectState::Key;
-                    Transition::ReadValue
-                }
-            }
-
-            &mut State::Object(ref mut obj_state @ ObjectState::Key) => {
-                if token != Token::Colon {
-                    panic!("unexpected Colon");
-                }
-                *obj_state = ObjectState::Colon;
-                Transition::Nothing
-            }
-
-            &mut State::Object(ref mut obj_state @ ObjectState::Colon) => {
-                *obj_state = ObjectState::CommaEnd;
-                Transition::ReadValue
-            }
-
-            &mut State::Object(ref mut arr_state @ ObjectState::CommaEnd) => {
-                ss.sink.pop_into_map();
-
-                match token {
-                    Token::Comma => {
-                        *arr_state = ObjectState::Start;
-                        Transition::Nothing
-                    },
-                    Token::ObjectClose => {
+                self.stack.pop().unwrap();
+                ss.sink.finalize_array();
+                Ok(())
+            },
+            State::Number(number_state) if number_state.can_end() => {
+                self.stack.pop().unwrap();
+                ss.sink.push_number(self.number_data.clone());
+                match *self.stack.last().unwrap() {
+                    State::Object(ObjectState::CommaEnd) => {
+                        self.stack.pop().unwrap();
+                        ss.sink.pop_into_map();
                         ss.sink.finalize_map();
-                        Transition::PopStack
+                        Ok(())
                     },
-                    _ => panic!("unexpected"),
+                    _ => unexpected!(ss),
                 }
-            }
+            },
+            _ => unexpected!(ss),
+        }
+    }
 
-            &mut State::String => {
-                match token {
-                    Token::Quote => {
-                        ss.sink.finalize_string();
-                        Transition::PopStack
-                    },
-                    Token::StringSource(range) => {
-                        ss.sink.append_string_range(range);
-                        Transition::Nothing
-                    },
-                    Token::StringSingle(character) => {
-                        ss.sink.append_string_single(character);
-                        Transition::Nothing
-                    },
-                    Token::StringCodepoint(codepoint) => {
-                        ss.sink.append_string_codepoint(codepoint);
-                        Transition::Nothing
-                    },
-                    token => panic!("{:?}", token),
-                }
-            }
+    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("array_open");
 
-            &mut State::Number(ref mut num_state, ref mut data) => {
-                match num_state {
-                    &mut NumberState::Integer => {
-                        match token {
-                            Token::Number(num) => {
-                                *num_state = NumberState::DotExponentEnd;
-                                data.integer = num;
-                                Transition::Nothing
-                            },
-                            _ => panic!("unexpected")
-                        }
-                    }
-                    &mut NumberState::DotExponentEnd => {
-                        match token {
-                            Token::Dot => {
-                                *num_state = NumberState::Decimal;
-                                Transition::Nothing
-                            },
-                            Token::Exponent => {
-                                *num_state = NumberState::ExponentSign;
-                                Transition::Nothing
-                            }
-                            _ => {
-                                ss.sink.push_number(data.clone());
-                                Transition::PopRedo
-                            }
-                        }
-                    },
-                    &mut NumberState::Decimal => {
-                        match token {
-                            Token::Number(num) => {
-                                *num_state = NumberState::ExponentStartEnd;
-                                data.decimal = Some(num);
-                                Transition::Nothing
-                            },
-                            _ => panic!("unexpected"),
-                        }
-                    }
-                    &mut NumberState::ExponentStartEnd => {
-                        match token {
-                            Token::Exponent => {
-                                *num_state = NumberState::ExponentSign;
-                                Transition::Nothing
-                            },
-                            _ => {
-                                ss.sink.push_number(data.clone());
-                                Transition::PopRedo
-                            }
-                        }
-                    }
-                    &mut NumberState::ExponentSign => {
-                        match token {
-                            Token::Sign(sign) => {
-                                *num_state = NumberState::Exponent;
-                                data.exponent_sign = sign;
-                                Transition::Nothing
-                            },
-                            Token::Number(num) => {
-                                data.exponent = Some(num);
-                                ss.sink.push_number(data.clone());
-                                Transition::PopStack
-                            },
-                            _ => panic!("unexpected"),
-                        }
-                    }
-                    &mut NumberState::Exponent => {
-                        match token {
-                            Token::Number(num) => {
-                                data.exponent = Some(num);
-                                ss.sink.push_number(data.clone());
-                                Transition::PopStack
-                            },
-                            _ => panic!("unexpected"),
-                        }
-                    }
+        if *self.stack.last().unwrap() != State::ReadValue {
+            return unexpected!(ss);
+        }
+
+        self.stack.pop().unwrap();
+        self.stack.push(State::Array);
+        self.stack.push(State::ReadValue);
+        ss.sink.push_array();
+        Ok(())
+    }
+
+    pub fn token_array_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("array_close");
+
+        match *self.stack.last().unwrap() {
+            State::Array => {
+                self.stack.pop().unwrap();
+                ss.sink.pop_into_array();
+                ss.sink.finalize_array();
+                Ok(())
+            },
+            State::ReadValue => {
+                self.stack.pop().unwrap();
+                if *self.stack.last().unwrap() != State::Array {
+                    return unexpected!(ss);
                 }
-            }
+                self.stack.pop().unwrap();
+                ss.sink.finalize_array();
+                Ok(())
+            },
+            State::Number(number_state) if number_state.can_end() => {
+                self.stack.pop().unwrap();
+                ss.sink.push_number(self.number_data.clone());
+                match *self.stack.last().unwrap() {
+                    State::Array => {
+                        self.stack.pop().unwrap();
+                        ss.sink.pop_into_array();
+                        ss.sink.finalize_array();
+                        Ok(())
+                    },
+                    _ => unexpected!(ss),
+                }
+            },
+            _ => unexpected!(ss),
+        }
+    }
+
+    pub fn token_comma<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("comma");
+
+        enum Return {
+            None,
+            PopNumber(NumberData),
+            ReadValue,
+        }
+
+        let r = match *self.stack.last_mut().unwrap() {
+            State::Array => {
+                ss.sink.pop_into_array();
+                Return::ReadValue
+            },
+            State::Object(ref mut state @ ObjectState::CommaEnd) => {
+                *state = ObjectState::Key;
+                ss.sink.pop_into_map();
+                Return::None
+            },
+            State::Number(number_state) if number_state.can_end() => {
+                Return::PopNumber(self.number_data.clone())
+            },
+            _ => return unexpected!(ss),
         };
 
-        // Matches on state transition, makes change on stack.
-        match transition {
-            Transition::ReadValue => {
-                self.open_type(ss, token)
-            },
-            Transition::PopStack => {
+        match r {
+            Return::None => Ok(()),
+            Return::PopNumber(data) => {
                 self.stack.pop().unwrap();
+                // TODO
+                ss.sink.push_number(data);
+                match *self.stack.last().unwrap() {
+                    State::Array => {
+                        self.stack.push(State::ReadValue);
+                        ss.sink.pop_into_array();
+                        Ok(())
+                    },
+                    State::Object(ObjectState::CommaEnd) => {
+                        // TODO
+                        self.stack.pop().unwrap();
+                        self.stack.push(State::Object(ObjectState::Key));
+                        ss.sink.pop_into_map();
+                        Ok(())
+                    },
+                    _ => unexpected!(ss),
+                }
+            },
+            Return::ReadValue => {
+                self.stack.push(State::ReadValue);
+                Ok(())
+            }
+        }
+    }
+
+    pub fn token_colon<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("colon");
+
+        match *self.stack.last_mut().unwrap() {
+            State::Object(ref mut state @ ObjectState::Colon) => {
+                *state = ObjectState::CommaEnd;
+            },
+            _ => return unexpected!(ss),
+        }
+
+        self.stack.push(State::ReadValue);
+        Ok(())
+    }
+
+    pub fn token_exponent<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("exponent");
+
+        match *self.stack.last_mut().unwrap() {
+            State::Number(ref mut state @ NumberState::DotExponentEnd) => {
+                *state = NumberState::ExponentSign;
                 Ok(())
             },
-            Transition::PopRedo => {
-                self.stack.pop().unwrap();
-                self.step(ss, token)
+            State::Number(ref mut state @ NumberState::ExponentStartEnd) => {
+                *state = NumberState::ExponentSign;
+                Ok(())
             },
-            Transition::Nothing => Ok(()),
+            _ => unexpected!(ss),
         }
+    }
+
+    pub fn token_dot<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("dot");
+
+        match *self.stack.last_mut().unwrap() {
+            State::Number(ref mut state @ NumberState::DotExponentEnd) => {
+                *state = NumberState::Decimal;
+                Ok(())
+            },
+            _ => unexpected!(ss),
+        }
+    }
+
+    pub fn token_sign<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, sign: bool) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("sign");
+
+        enum Return {
+            None,
+            Push,
+        }
+
+        let r = match *self.stack.last_mut().unwrap() {
+            State::Number(ref mut state @ NumberState::ExponentSign) => {
+                *state = NumberState::Exponent;
+                self.number_data.exponent_sign = sign;
+                Return::None
+            },
+            State::ReadValue => {
+                self.number_data.sign = sign;
+                Return::Push
+            },
+            _ => return unexpected!(ss),
+        };
+
+        match r {
+            Return::None => (),
+            Return::Push => {
+                self.stack.pop().unwrap();
+                self.stack.push(State::Number(NumberState::Integer))
+            },
+        }
+
+        Ok(())
+    }
+
+    pub fn token_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("number");
+
+        enum Return {
+            None,
+            PopStack,
+            Push,
+        }
+
+        // TODO: Number start
+        let r = match *self.stack.last_mut().unwrap() {
+            State::Number(ref mut state @ NumberState::Integer) => {
+                *state = NumberState::DotExponentEnd;
+                self.number_data.integer = range;
+                Return::None
+            },
+            State::Number(ref mut state @ NumberState::Decimal) => {
+                *state = NumberState::ExponentStartEnd;
+                self.number_data.decimal = Some(range);
+                Return::None
+            },
+            State::Number(NumberState::Exponent) => {
+                Return::PopStack
+            },
+            State::ReadValue => {
+                Return::Push
+            },
+            _ => return unexpected!(ss),
+        };
+
+        match r {
+            Return::None => (),
+            Return::PopStack => {
+                self.stack.pop().unwrap();
+                ()
+            }
+            Return::Push => {
+                self.number_data.integer = range;
+                self.stack.pop().unwrap();
+                self.stack.push(State::Number(NumberState::DotExponentEnd));
+                ()
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn token_bool<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, value: bool) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        if *self.stack.last().unwrap() != State::ReadValue {
+            return unexpected!(ss);
+        }
+        self.stack.pop().unwrap();
+        ss.sink.push_bool(value);
+        Ok(())
+    }
+
+    pub fn token_null<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        if *self.stack.last().unwrap() != State::ReadValue {
+            return unexpected!(ss);
+        }
+        self.stack.pop().unwrap();
+        ss.sink.push_null();
+        Ok(())
+    }
+
+    pub fn token_quote<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("quote");
+
+        enum Return {
+            StartString,
+            StartStringReplace,
+            EndString,
+        }
+
+        let r = match *self.stack.last_mut().unwrap() {
+            State::String => Return::EndString,
+            State::Object(ref mut state @ ObjectState::Key) => {
+                *state = ObjectState::Colon;
+                Return::StartString
+            },
+            State::ReadValue => Return::StartStringReplace,
+            _ => return unexpected!(ss),
+        };
+
+        match r {
+            Return::StartString => {
+                self.stack.push(State::String);
+                ss.sink.start_string();
+            },
+            Return::StartStringReplace => {
+                self.stack.pop().unwrap();
+                self.stack.push(State::String);
+                ss.sink.start_string();
+            },
+            Return::EndString => {
+                self.stack.pop();
+                ss.sink.finalize_string();
+            },
+        }
+
+        Ok(())
+    }
+
+    // Tokenizer guarantees that these are only called between token_quotes.
+    pub fn token_string_range<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("string_range");
+
+        ss.sink.append_string_range(range);
+        Ok(())
+    }
+    pub fn token_string_single<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, byte: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("string_single");
+
+        ss.sink.append_string_single(byte);
+        Ok(())
+    }
+    pub fn token_string_codepoint<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, codepoint: char) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        log_token("string_codepoint");
+
+        ss.sink.append_string_codepoint(codepoint);
+        Ok(())
+    }
+
+    pub fn finished(&self) -> bool {
+        self.stack.len() == 0
     }
 
 }

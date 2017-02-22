@@ -1,3 +1,6 @@
+#![feature(core_intrinsics)]
+
+
 pub mod parser;
 pub mod tokenizer;
 pub mod sink;
@@ -29,8 +32,9 @@ fn main() {
             source: VecSource::new(data.clone()),
             sink: EnumSink::new(&data),
         };
-        let mut parser = ParserState::new();
-        println!("{:?}", parser.parse(&mut ss));
+        let mut parser = TokenizerState::new();
+        let ret = parser.run(&mut ss);
+        println!("{:?} {:?}", ret, parser);
     }
 
 }
