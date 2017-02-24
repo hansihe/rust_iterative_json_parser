@@ -1,6 +1,5 @@
 use ::PResult;
 use ::input::Pos;
-use ::tokenizer::Token;
 
 pub mod string;
 

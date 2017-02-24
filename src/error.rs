@@ -1,5 +1,4 @@
 use ::input::Pos;
-use ::tokenizer::Token;
 
 #[derive(Debug, PartialEq)]
 pub enum ParseError<SourceBail> {

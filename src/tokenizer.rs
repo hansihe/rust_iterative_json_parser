@@ -6,13 +6,13 @@ use ::sink::Sink;
 use ::parser::ParserState;
 
 static UTF8_CHAR_WIDTH: [u8; 256] = [
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x1F
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // control characters
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 0x1F
+    1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0 on this line is quote
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x3F
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x5F
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1, // 0 on this line is backslash
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x6F
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x7F
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 0x9F
@@ -30,39 +30,6 @@ pub struct SS<Src, Snk> where Src: Source, Snk: Sink {
     pub sink: Snk,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
-pub enum Token {
-    // Number parts
-    Sign(bool),
-    Number(Range),
-    Dot,
-    Exponent,
-
-    // String parts
-    Quote,
-    StringSource(Range),
-    StringSingle(u8),
-    StringCodepoint(char),
-
-    // Rest
-    Boolean(bool),
-    Null,
-    ObjectOpen,
-    ObjectClose,
-    ArrayOpen,
-    ArrayClose,
-    Comma,
-    Colon,
-
-    // Special
-    Eof,
-}
-
-pub struct TokenSpan {
-    pub token: Token,
-    pub span: Range,
-}
-
 #[derive(Debug, Copy, Clone)]
 enum StringState {
     None,
@@ -77,7 +44,6 @@ enum TokenState {
     None,
     String,
     Number(Pos),
-    Lit(&'static [u8], usize, Token),
 }
 
 #[derive(Debug)]
@@ -126,71 +92,6 @@ impl TokenizerState {
         }
     }
 
-    /// Called when we want to expect a literal.
-    ///
-    /// Will return `final_token` when the literal is successfully read.
-    //fn lit<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, data: &'static [u8], final_token: Token) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
-    //    self.state = TokenState::Lit(data, 0, final_token);
-    //    self.token(ss)
-    //}
-
-    /// Called when the current tokenizer state is TokenState::Lit,
-    /// and does all processing related to that state.
-    ///
-    /// There are multiple ways this function can return:
-    /// 1. We reached the end of the literal without any trouble,
-    ///    reset the tokenizer state and return the Token specified
-    ///    in the TokenState::Lit.
-    /// 2. We hit some unexpected character/EOF. This is a normal
-    ///    parse error.
-    /// 3. We got the bail signal from the source. We store the current
-    ///    position in the literal so that we can pick up in the next call.
-    fn do_lit<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<Token, Src::Bail> where Src: Source, Snk: Sink {
-        let token = match self.state {
-            TokenState::Lit(ref mut data, ref mut curr_pos, ref token) => {
-
-                // Go forwards from the position where we left off
-                // until the end of the literal string.
-                for pos in *curr_pos..data.len() {
-                    match ss.source.peek_char() {
-
-                        // We matched a single character exactly.
-                        // Keep going.
-                        Ok(character) if character == data[pos] =>
-                            ss.source.skip(1),
-
-                        // We got some unexpected character.
-                        // Return a parse error.
-                        Ok(_) =>
-                            return Err(ParseError::Unexpected(ss.source.position())),
-
-                        // We reached EOF.
-                        // This should not happen in the middle of a literal,
-                        // return a parse error.
-                        Err(SourceError::Eof) =>
-                            return Err(ParseError::Unexpected(ss.source.position())),
-
-                        // We got a bail signal.
-                        // Store our state so that we can pick up where
-                        // we left off.
-                        Err(SourceError::Bail(bt)) => {
-                            *curr_pos = pos;
-                            return Err(ParseError::SourceBail(bt));
-                        }
-                    }
-                }
-                *token
-            },
-            // Because a predicate to calling this is that the tokenizer
-            // state is TokenizerState::Lit, all other branches are
-            // unreachable.
-            _ => unreachable!(),
-        };
-
-        self.state = TokenState::None;
-        Ok(token)
-    }
-
     #[cfg(not(feature = "use_simd"))]
     fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         let mut length = 0;
@@ -208,13 +109,14 @@ impl TokenizerState {
                 // If the length is 0 from the LUT, it means the character
                 // just read was invalid UTF8. Report a parse error.
                 if length == 0 {
-                    return Err(ParseError::Unexpected(ss.source.position()));
+                    if curr_char == b'\\' || curr_char == b'"' {
+                        break;
+                    } else {
+                        return Err(ParseError::Unexpected(ss.source.position()));
+                    }
                 }
                 // If we see some other actionable character, bail
                 // from the fast-path, and do a full match.
-                if curr_char == b'\\' || curr_char == b'"' {
-                    break;
-                }
             } else {
                 // When in the middle of a UTF8 character, we simply
                 // need to validate that the two most significant bits
@@ -325,12 +227,11 @@ impl TokenizerState {
                 },
             };
 
-            if curr == b'\\' || curr == b'"' {
-                break 'fallback;
-            }
-
             let mut length = UTF8_CHAR_WIDTH[curr as usize];
             if length == 0 {
+                if curr == b'\\' || curr == b'"' {
+                    break 'fallback;
+                }
                 return Err(ParseError::Unexpected(ss.source.position()));
             }
 
@@ -385,7 +286,7 @@ impl TokenizerState {
                             self.string_state = StringState::End;
                             ss.source.skip(1);
 
-                            if !range.empty() {
+                            if !(range.start == range.end) {
                                 self.parser.token_string_range(ss, range)?;
                             }
                         },
@@ -397,7 +298,7 @@ impl TokenizerState {
                             self.string_state = StringState::StartEscape;
                             ss.source.skip(1);
 
-                            if !range.empty() {
+                            if !(range.start == range.end) {
                                 self.parser.token_string_range(ss, range)?;
                             }
                         },
@@ -586,9 +487,6 @@ impl TokenizerState {
     fn do_run<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail> where Src: Source, Snk: Sink {
         loop {
             match self.state {
-                TokenState::Lit(..) => {
-                    self.do_lit(ss)?;
-                },
                 TokenState::String => {
                     self.do_str(ss)?;
                 },
