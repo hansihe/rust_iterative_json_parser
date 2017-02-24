@@ -5,11 +5,9 @@ pub mod debug_print;
 pub mod into_enum;
 
 pub trait Sink {
-    type Bail;
-
     fn push_map(&mut self);
     fn push_array(&mut self);
-    fn push_number(&mut self, integer: NumberData) -> Result<(), Self::Bail>;
+    fn push_number(&mut self, integer: NumberData);
     fn push_bool(&mut self, boolean: bool);
     fn push_null(&mut self);
 

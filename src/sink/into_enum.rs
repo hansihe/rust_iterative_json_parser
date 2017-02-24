@@ -47,10 +47,9 @@ impl<'a> EnumSink<'a> {
 }
 
 impl<'a> Sink for EnumSink<'a> {
-    type Bail = ();
     fn push_map(&mut self) { self.stack.push(Json::Object(vec![])) }
     fn push_array(&mut self) { self.stack.push(Json::Array(vec![])) }
-    fn push_number(&mut self, number: NumberData) -> Result<(), Self::Bail> {
+    fn push_number(&mut self, number: NumberData) {
         let mut out = String::new();
 
         if number.sign { out.push('+'); }
@@ -72,8 +71,6 @@ impl<'a> Sink for EnumSink<'a> {
         else { out.push('1') }
 
         self.stack.push(Json::Number(out));
-
-        Ok(())
     }
     fn push_bool(&mut self, boolean: bool) { self.stack.push(Json::Boolean(boolean)) }
     fn push_null(&mut self) { self.stack.push(Json::Null) }

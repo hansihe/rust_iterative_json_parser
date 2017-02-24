@@ -10,18 +10,14 @@ impl PrintSink {
 }
 
 impl Sink for PrintSink {
-    type Bail = ();
-
     fn push_map(&mut self) {
         println!("push_map");
     }
     fn push_array(&mut self) {
         println!("push_array");
     }
-    // fn push_string(&mut self, string: Range) { println!("push_string {:?}", string); }
-    fn push_number(&mut self, num: NumberData) -> Result<(), Self::Bail> {
+    fn push_number(&mut self, num: NumberData) {
         println!("push_float {:?}", num);
-        Ok(())
     }
     fn push_bool(&mut self, val: bool) {
         println!("push_bool {:?}", val);

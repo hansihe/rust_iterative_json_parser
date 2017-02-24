@@ -10,7 +10,7 @@ pub mod error;
 pub mod source;
 pub mod decoder;
 
-pub type PResult<T, SourceBail, SinkBail> = Result<T, error::ParseError<SourceBail, SinkBail>>;
+pub type PResult<T, SourceBail> = Result<T, error::ParseError<SourceBail>>;
 
 pub use parser::{ParserState, NumberData};
 pub use source::{Source, SourceError};

@@ -102,7 +102,7 @@ impl TokenizerState {
         }
     }
 
-    fn skip_whitespace<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn skip_whitespace<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         while match ss.source.peek_char() {
             Ok(b' ') => true,
             Ok(b'\t') => true,
@@ -115,7 +115,7 @@ impl TokenizerState {
         Ok(())
     }
 
-    fn read_char<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<u8, <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn read_char<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<u8, <Src as Source>::Bail> where Src: Source, Snk: Sink {
         match ss.source.peek_char() {
             Ok(character) => {
                 ss.source.skip(1);
@@ -145,7 +145,7 @@ impl TokenizerState {
     ///    parse error.
     /// 3. We got the bail signal from the source. We store the current
     ///    position in the literal so that we can pick up in the next call.
-    fn do_lit<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<Token, Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    fn do_lit<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<Token, Src::Bail> where Src: Source, Snk: Sink {
         let token = match self.state {
             TokenState::Lit(ref mut data, ref mut curr_pos, ref token) => {
 
@@ -192,7 +192,7 @@ impl TokenizerState {
     }
 
     #[cfg(not(feature = "use_simd"))]
-    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         let mut length = 0;
         let mut curr_char = initial_character;
 
@@ -250,7 +250,7 @@ impl TokenizerState {
     }
 
     #[cfg(all(feature = "use_simd", target_feature = "sse2", target_feature = "ssse3"))]
-    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         use ::simd::x86::ssse3::Ssse3I8x16;
         use ::simd::x86::sse2::Sse2I8x16;
         use ::simd::u8x16;
@@ -367,7 +367,7 @@ impl TokenizerState {
     }
 
     // Continues processing on a string value in the JSON.
-    fn do_str<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    fn do_str<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail> where Src: Source, Snk: Sink {
 
         loop {
             match (self.string_state, ss.source.peek_char()) {
@@ -560,7 +560,7 @@ impl TokenizerState {
         self.parser.token_quote(ss)
     }
 
-    fn do_num<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, start: Pos) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    fn do_num<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, start: Pos) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         loop {
             match ss.source.peek_char() {
 
@@ -583,7 +583,7 @@ impl TokenizerState {
         self.parser.token_number(ss, Range::new(start, pos))
     }
 
-    fn do_run<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    fn do_run<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail> where Src: Source, Snk: Sink {
         loop {
             match self.state {
                 TokenState::Lit(..) => {
@@ -639,7 +639,7 @@ impl TokenizerState {
         }
     }
 
-    pub fn run<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
+    pub fn run<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail> where Src: Source, Snk: Sink {
         match self.do_run(ss) {
             Ok(()) => unreachable!(),
             Err(ParseError::Eof) => {

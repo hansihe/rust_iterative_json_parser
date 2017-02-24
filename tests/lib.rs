@@ -6,7 +6,7 @@ use iterative_json_parser::SS;
 
 use iterative_json_parser::sink::into_enum::{EnumSink, Json};
 
-fn parse_to_enum(data: &'static str) -> Result<Json, ParseError<(), ()>> {
+fn parse_to_enum(data: &'static str) -> Result<Json, ParseError<()>> {
     let data_bytes = data.as_bytes();
 
     let mut ss = SS {

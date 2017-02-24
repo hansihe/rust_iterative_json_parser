@@ -1,5 +1,5 @@
 use ::PResult;
-use ::tokenizer::{ Token, TokenizerState, SS };
+use ::tokenizer::{ SS };
 use ::sink::Sink;
 use ::error::ParseError;
 use ::input::Range;
@@ -21,15 +21,6 @@ enum NumberState {
     ExponentStartEnd, // 'eE' or end
     ExponentSign, // '-+' or Exponent
     Exponent, // Exponent then end
-}
-impl NumberState {
-    fn can_end(self) -> bool {
-        match self {
-            NumberState::DotExponentEnd => true,
-            NumberState::ExponentStartEnd => true,
-            _ => false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -74,27 +65,8 @@ pub struct ParserState {
     started: bool,
 }
 
-enum Transition {
-    PopStack,
-    ReadValue,
-    PopRedo,
-    Nothing,
-}
-
 macro_rules! unexpected {
     ($ss:expr) => { Err(ParseError::Unexpected($ss.source.position())) }
-}
-macro_rules! handle_bail {
-    ($sink_expr:expr) => { handle_bail!($sink_expr, {}) };
-    ($sink_expr:expr, $exit_plan:expr) => {
-        match $sink_expr {
-            Ok(()) => {},
-            Err(bail) => {
-                $exit_plan;
-                return Err(ParseError::SinkBail(bail));
-            },
-        }
-    };
 }
 
 fn log_token(token: &str) {
@@ -113,22 +85,21 @@ impl ParserState {
         }
     }
 
-    pub fn close_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn close_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         match self.state {
             TopState::Number(NumberState::DotExponentEnd) |
             TopState::Number(NumberState::ExponentStartEnd) => {
                 self.state = TopState::None;
                 let mut number_data = NumberData::default();
                 ::std::mem::swap(&mut number_data, &mut self.number_data);
-                // FIXME FIXME FIXME jasdfjasdfhiu;
-                handle_bail!(ss.sink.push_number(number_data));
+                ss.sink.push_number(number_data);
                 Ok(())
             },
             _ => unexpected!(ss),
         }
     }
 
-    pub fn token_object_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_object_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("object_open");
 
         if self.state != TopState::ReadValue {
@@ -142,7 +113,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_object_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_object_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("object_close");
 
         match self.state {
@@ -170,7 +141,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("array_open");
 
         if self.state != TopState::ReadValue {
@@ -184,7 +155,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_array_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_array_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("array_close");
 
         match self.state {
@@ -211,7 +182,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_comma<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_comma<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("comma");
 
         match self.state {
@@ -235,7 +206,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_colon<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_colon<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("colon");
 
         match *self.stack.last_mut().unwrap() {
@@ -248,7 +219,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_exponent<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_exponent<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("exponent");
 
         match self.state {
@@ -264,7 +235,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_dot<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_dot<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("dot");
 
         match self.state {
@@ -276,7 +247,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_sign<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, sign: bool) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_sign<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, sign: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("sign");
 
         match self.state {
@@ -295,7 +266,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("number");
 
         match self.state {
@@ -316,14 +287,14 @@ impl ParserState {
                 self.number_data.exponent = Some(range);
                 let mut number_data = NumberData::default();
                 ::std::mem::swap(&mut number_data, &mut self.number_data);
-                handle_bail!(ss.sink.push_number(number_data));
+                ss.sink.push_number(number_data);
                 Ok(())
             },
             _ => unexpected!(ss),
         }
     }
 
-    pub fn token_bool<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, value: bool) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_bool<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, value: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("bool");
 
         match self.state {
@@ -336,7 +307,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_null<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_null<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("null");
 
         match self.state {
@@ -349,7 +320,7 @@ impl ParserState {
         }
     }
 
-    pub fn token_quote<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_quote<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("quote");
 
         match self.state {
@@ -380,19 +351,19 @@ impl ParserState {
     }
 
     // Tokenizer guarantees that these are only called between token_quotes.
-    pub fn token_string_range<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_range<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("string_range");
 
         ss.sink.append_string_range(range);
         Ok(())
     }
-    pub fn token_string_single<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, byte: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_single<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, byte: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("string_single");
 
         ss.sink.append_string_single(byte);
         Ok(())
     }
-    pub fn token_string_codepoint<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, codepoint: char) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_codepoint<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, codepoint: char) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("string_codepoint");
 
         ss.sink.append_string_codepoint(codepoint);
