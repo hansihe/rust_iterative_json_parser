@@ -89,6 +89,7 @@ pub struct TokenizerState {
     string_start: Pos,
 }
 
+
 impl TokenizerState {
 
     pub fn new() -> TokenizerState {
@@ -190,6 +191,181 @@ impl TokenizerState {
         Ok(token)
     }
 
+    #[cfg(not(feature = "use_simd"))]
+    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        let mut length = 0;
+        let mut curr_char = initial_character;
+
+        // There is some code-repetition here, but having this fast-path
+        // more than doubles the speed of reading string data.
+        // I would say it is worth it.
+        loop {
+            // When the length is 0, it means we have reached the boundry
+            // of a new unicode character, and should perform a new
+            // length lookup.
+            if length == 0 {
+                length = UTF8_CHAR_WIDTH[curr_char as usize];
+                // If the length is 0 from the LUT, it means the character
+                // just read was invalid UTF8. Report a parse error.
+                if length == 0 {
+                    return Err(ParseError::Unexpected(ss.source.position()));
+                }
+                // If we see some other actionable character, bail
+                // from the fast-path, and do a full match.
+                if curr_char == b'\\' || curr_char == b'"' {
+                    break;
+                }
+            } else {
+                // When in the middle of a UTF8 character, we simply
+                // need to validate that the two most significant bits
+                // of the byte are 10.
+                let valid = (curr_char & 0b11000000) == 0b10000000;
+                if !valid {
+                    return Err(ParseError::Unexpected(ss.source.position()));
+                }
+            }
+
+            length -= 1;
+            ss.source.skip(1);
+
+            curr_char = match ss.source.peek_char() {
+                Ok(character) => character,
+                Err(SourceError::Eof) =>
+                    return Err(ParseError::Eof),
+                Err(SourceError::Bail(bail)) => {
+                    // When we receive a bail signal, we need to set
+                    // the string state so that we can continue from
+                    // where we left off.
+                    if length == 0 {
+                        self.string_state = StringState::None;
+                    } else {
+                        self.string_state = StringState::Codepoint(length);
+                    }
+                    return Err(ParseError::SourceBail(bail));
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(all(feature = "use_simd", target_feature = "sse2", target_feature = "ssse3"))]
+    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail, <Snk as Sink>::Bail> where Src: Source, Snk: Sink {
+        use ::simd::x86::ssse3::Ssse3I8x16;
+        use ::simd::x86::sse2::Sse2I8x16;
+        use ::simd::u8x16;
+        use ::simd::i8x16;
+        use ::simd::bool8ix16;
+
+        //extern "platform-intrinsic" {
+        //    //fn x86_mm_shuffle_epi8(a: ::simd::i8x16, b: ::simd::i8x16) -> ::simd::i8x16;
+        //}
+
+        fn bsf(num: u32) -> u32 {
+            let result: u32;
+            unsafe {
+                asm!(
+                    "bsf $0, $1":
+                    "=r"(result):
+                    "r"(num)
+                );
+            }
+            result
+        }
+
+        // Constants for SIMD
+        let quote_char = u8x16::splat(b'"');
+        let escape_char = u8x16::splat(b'\\');
+        let utf8_mask = u8x16::splat(0b10000000);
+        let reverse_mask = i8x16::new(
+            15, 14, 13, 12,
+            11, 10, 09, 08,
+            07, 06, 05, 04,
+            03, 02, 01, 00,
+        );
+
+        'fallback: loop {
+
+            'simd: loop {
+                let skippable: u32;
+                {
+                    let slice = match ss.source.peek_slice(16) {
+                        Some(slice) => slice,
+                        None => break 'simd,
+                    };
+                    let curr = u8x16::load(slice, 0);
+
+                    let quotes = curr.eq(quote_char);
+                    let escapes = curr.eq(escape_char);
+                    let unicode = bool8ix16::from_repr((curr & utf8_mask).to_i8());
+                    let breaks = quotes | escapes | unicode;
+
+                    let breaks_int = breaks.to_repr().shuffle_bytes(reverse_mask).move_mask();
+                    let breaks_int_filled = breaks_int | 0b1_00000000_00000000;
+
+                    skippable = bsf(breaks_int_filled);
+                }
+                ss.source.skip(skippable as usize);
+
+                // We hit a UTF8/escape/quote character. Fallback.
+                // If we didn't, keep going with the fast-path.
+                if skippable < 16 {
+                    break 'simd;
+                }
+            }
+
+            let curr = match ss.source.peek_char() {
+                Ok(character) => character,
+                Err(SourceError::Bail(bail)) => {
+                    self.string_state = StringState::None;
+                    return Err(ParseError::SourceBail(bail));
+                },
+                Err(SourceError::Eof) => {
+                    return Err(ParseError::Eof);
+                },
+            };
+
+            if curr == b'\\' || curr == b'"' {
+                break 'fallback;
+            }
+
+            let mut length = UTF8_CHAR_WIDTH[curr as usize];
+            if length == 0 {
+                return Err(ParseError::Unexpected(ss.source.position()));
+            }
+
+            ss.source.skip(1);
+
+            'codepoint_scan: loop {
+                if length == 1 {
+                    break 'codepoint_scan;
+                }
+
+                let curr = match ss.source.peek_char() {
+                    Ok(character) => character,
+                    Err(SourceError::Bail(bail)) => {
+                        self.string_state = StringState::Codepoint(length);
+                        return Err(ParseError::SourceBail(bail));
+                    },
+                    Err(SourceError::Eof) => {
+                        return Err(ParseError::Eof);
+                    },
+                };
+
+                let valid = (curr & 0b11000000) == 0b10000000;
+                if !valid {
+                    return Err(ParseError::Unexpected(ss.source.position()));
+                }
+
+                length -= 1;
+                ss.source.skip(1);
+            }
+
+        }
+
+        Ok(())
+    }
+
     // Continues processing on a string value in the JSON.
     fn do_str<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), Src::Bail, Snk::Bail> where Src: Source, Snk: Sink {
 
@@ -228,58 +404,60 @@ impl TokenizerState {
                         // Normal characters.
                         // Skip and emit a range when we reach something else.
                         _ => {
-                            let mut length = 0;
-                            let mut curr_char = character;
+                            self.validate_utf8(ss, character)?
 
-                            // There is some code-repetition here, but having this fast-path
-                            // more than doubles the speed of reading string data.
-                            // I would say it is worth it.
-                            loop {
-                                // When the length is 0, it means we have reached the boundry
-                                // of a new unicode character, and should perform a new
-                                // length lookup.
-                                if length == 0 {
-                                    length = UTF8_CHAR_WIDTH[curr_char as usize];
-                                    // If the length is 0 from the LUT, it means the character
-                                    // just read was invalid UTF8. Report a parse error.
-                                    if length == 0 {
-                                        return Err(ParseError::Unexpected(ss.source.position()));
-                                    }
-                                    // If we see some other actionable character, bail
-                                    // from the fast-path, and do a full match.
-                                    if curr_char == b'\\' || curr_char == b'"' {
-                                        break;
-                                    }
-                                } else {
-                                    // When in the middle of a UTF8 character, we simply
-                                    // need to validate that the two most significant bits
-                                    // of the byte are 10.
-                                    let valid = (curr_char & 0b11000000) == 0b10000000;
-                                    if !valid {
-                                        return Err(ParseError::Unexpected(ss.source.position()));
-                                    }
-                                }
+                            //let mut length = 0;
+                            //let mut curr_char = character;
 
-                                length -= 1;
-                                ss.source.skip(1);
+                            //// There is some code-repetition here, but having this fast-path
+                            //// more than doubles the speed of reading string data.
+                            //// I would say it is worth it.
+                            //loop {
+                            //    // When the length is 0, it means we have reached the boundry
+                            //    // of a new unicode character, and should perform a new
+                            //    // length lookup.
+                            //    if length == 0 {
+                            //        length = UTF8_CHAR_WIDTH[curr_char as usize];
+                            //        // If the length is 0 from the LUT, it means the character
+                            //        // just read was invalid UTF8. Report a parse error.
+                            //        if length == 0 {
+                            //            return Err(ParseError::Unexpected(ss.source.position()));
+                            //        }
+                            //        // If we see some other actionable character, bail
+                            //        // from the fast-path, and do a full match.
+                            //        if curr_char == b'\\' || curr_char == b'"' {
+                            //            break;
+                            //        }
+                            //    } else {
+                            //        // When in the middle of a UTF8 character, we simply
+                            //        // need to validate that the two most significant bits
+                            //        // of the byte are 10.
+                            //        let valid = (curr_char & 0b11000000) == 0b10000000;
+                            //        if !valid {
+                            //            return Err(ParseError::Unexpected(ss.source.position()));
+                            //        }
+                            //    }
 
-                                curr_char = match ss.source.peek_char() {
-                                    Ok(character) => character,
-                                    Err(SourceError::Eof) =>
-                                        return Err(ParseError::Eof),
-                                    Err(SourceError::Bail(bail)) => {
-                                        // When we receive a bail signal, we need to set
-                                        // the string state so that we can continue from
-                                        // where we left off.
-                                        if length == 0 {
-                                            self.string_state = StringState::None;
-                                        } else {
-                                            self.string_state = StringState::Codepoint(length);
-                                        }
-                                        return Err(ParseError::SourceBail(bail));
-                                    },
-                                }
-                            }
+                            //    length -= 1;
+                            //    ss.source.skip(1);
+
+                            //    curr_char = match ss.source.peek_char() {
+                            //        Ok(character) => character,
+                            //        Err(SourceError::Eof) =>
+                            //            return Err(ParseError::Eof),
+                            //        Err(SourceError::Bail(bail)) => {
+                            //            // When we receive a bail signal, we need to set
+                            //            // the string state so that we can continue from
+                            //            // where we left off.
+                            //            if length != 0 {
+                            //                self.string_state = StringState::None;
+                            //            } else {
+                            //                self.string_state = StringState::Codepoint(length);
+                            //            }
+                            //            return Err(ParseError::SourceBail(bail));
+                            //        },
+                            //    }
+                            //}
 
                             //// TODO: OPT: Check characters inline
                             //match length {

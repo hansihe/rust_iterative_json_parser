@@ -41,6 +41,11 @@ impl Source for VecSource {
         }
     }
 
+    fn peek_slice<'a>(&'a self, length: usize) -> Option<&'a [u8]> {
+        let pos = self.pos;
+        self.vec.get(pos..(pos+length))
+    }
+
 }
 
 #[derive(Debug)]
@@ -85,6 +90,10 @@ impl Source for VecSourceB {
                 Ok(character)
             }
         }
+    }
+
+    fn peek_slice<'a>(&'a self, _length: usize) -> Option<&'a [u8]> {
+        None
     }
 
 }

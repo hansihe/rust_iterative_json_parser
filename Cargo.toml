@@ -7,7 +7,13 @@ authors = ["HansiHE <hansihe@hansihe.com>"]
 name = "iterative_json_parser"
 src = "lib.rs"
 
+[features]
+#default = ["use_simd"]
+use_simd = ["simd"]
+
 [dependencies]
+simd = { version = "*", optional = true}
 
 [profile.release]
 debug = true
+

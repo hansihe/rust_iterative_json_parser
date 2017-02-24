@@ -1,4 +1,6 @@
-#![feature(core_intrinsics)]
+#![cfg_attr(feature = "use_simd", feature(platform_intrinsics, cfg_target_feature, asm))]
+#[cfg(all(feature = "use_simd", target_feature = "sse2", target_feature = "ssse3"))]
+extern crate simd;
 
 
 pub mod parser;

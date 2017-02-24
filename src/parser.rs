@@ -84,6 +84,18 @@ enum Transition {
 macro_rules! unexpected {
     ($ss:expr) => { Err(ParseError::Unexpected($ss.source.position())) }
 }
+macro_rules! handle_bail {
+    ($sink_expr:expr) => { handle_bail!($sink_expr, {}) };
+    ($sink_expr:expr, $exit_plan:expr) => {
+        match $sink_expr {
+            Ok(()) => {},
+            Err(bail) => {
+                $exit_plan;
+                return Err(ParseError::SinkBail(bail));
+            },
+        }
+    };
+}
 
 fn log_token(token: &str) {
     //println!("token: {:?}", token);
@@ -108,7 +120,8 @@ impl ParserState {
                 self.state = TopState::None;
                 let mut number_data = NumberData::default();
                 ::std::mem::swap(&mut number_data, &mut self.number_data);
-                ss.sink.push_number(number_data);
+                // FIXME FIXME FIXME jasdfjasdfhiu;
+                handle_bail!(ss.sink.push_number(number_data));
                 Ok(())
             },
             _ => unexpected!(ss),
@@ -303,7 +316,7 @@ impl ParserState {
                 self.number_data.exponent = Some(range);
                 let mut number_data = NumberData::default();
                 ::std::mem::swap(&mut number_data, &mut self.number_data);
-                ss.sink.push_number(number_data);
+                handle_bail!(ss.sink.push_number(number_data));
                 Ok(())
             },
             _ => unexpected!(ss),

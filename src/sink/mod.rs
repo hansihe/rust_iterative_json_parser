@@ -9,7 +9,7 @@ pub trait Sink {
 
     fn push_map(&mut self);
     fn push_array(&mut self);
-    fn push_number(&mut self, integer: NumberData);
+    fn push_number(&mut self, integer: NumberData) -> Result<(), Self::Bail>;
     fn push_bool(&mut self, boolean: bool);
     fn push_null(&mut self);
 

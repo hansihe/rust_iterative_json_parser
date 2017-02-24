@@ -19,8 +19,9 @@ impl Sink for PrintSink {
         println!("push_array");
     }
     // fn push_string(&mut self, string: Range) { println!("push_string {:?}", string); }
-    fn push_number(&mut self, num: NumberData) {
+    fn push_number(&mut self, num: NumberData) -> Result<(), Self::Bail> {
         println!("push_float {:?}", num);
+        Ok(())
     }
     fn push_bool(&mut self, val: bool) {
         println!("push_bool {:?}", val);
