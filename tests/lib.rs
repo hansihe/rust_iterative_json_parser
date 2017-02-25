@@ -171,6 +171,40 @@ fn root_literals() {
 }
 
 #[test]
+fn short_encodings_utf8() {
+    {
+        let input = [b'"', 0b1111_0000, 0b1000_0000, 0b1000_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_err());
+    }
+    {
+        let input = [b'"', 0b1110_0000, 0b1000_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_err());
+    }
+    {
+        let input = [b'"', 0b1110_0000, 0b1001_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_err());
+    }
+    {
+        let input = [b'"', 0b1111_0000, 0b1010_0000, 0b1000_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_ok());
+    }
+    {
+        let input = [b'"', 0b1111_0000, 0b1001_0000, 0b1000_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_ok());
+    }
+    {
+        let input = [b'"', 0b1110_0000, 0b1010_0000, 0b1000_0000, b'"'];
+        let result = parse_to_enum(&input);
+        assert!(result.is_ok());
+    }
+}
+
+#[test]
 fn fuzz_panic_1() {
     let input = b"{\"4\": }";
     let result = parse_to_enum(input);
@@ -190,4 +224,11 @@ fn fuzz_panic_3() {
     let result = parse_to_enum(input);
     assert!(result.is_err());
 
+}
+
+#[test]
+fn fuzz_panic_4() {
+    let input = b"\"\xc2\"";
+    let result = parse_to_enum(input);
+    assert!(result.is_err());
 }

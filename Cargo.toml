@@ -10,13 +10,9 @@ src = "lib.rs"
 [features]
 #default = ["use_simd"]
 use_simd = ["simd"]
-use_afl = ["afl-plugin", "afl"]
 
 [dependencies]
 simd = { version = "0.2", optional = true }
-
-afl = { version = "0.1", optional = true }
-afl-plugin = { version = "0.1", optional = true }
 
 [profile.release]
 debug = true

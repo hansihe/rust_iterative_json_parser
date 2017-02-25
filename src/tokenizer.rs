@@ -4,25 +4,7 @@ use ::input::{Pos, Range};
 use ::source::{Source, SourceError};
 use ::sink::Sink;
 use ::parser::ParserState;
-
-static UTF8_CHAR_WIDTH: [u8; 256] = [
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // control characters
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 0x1F
-    1,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0 on this line is quote
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x3F
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-    1,1,1,1,1,1,1,1,1,1,1,1,0,1,1,1, // 0 on this line is backslash
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x6F
-    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // 0x7F
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 0x9F
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, // 0xBF
-    0,0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, // 0xDF
-    3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3, // 0xEF
-    4,4,4,4,4,0,0,0,0,0,0,0,0,0,0,0, // 0xFF
-];
+use ::utf8;
 
 #[derive(Debug, Clone)]
 pub struct SS<Src, Snk> where Src: Source, Snk: Sink {
@@ -32,8 +14,7 @@ pub struct SS<Src, Snk> where Src: Source, Snk: Sink {
 
 #[derive(Debug, Copy, Clone)]
 enum StringState {
-    None,
-    Codepoint(u8),
+    None(utf8::DecodeState),
     StartEscape,
     UnicodeEscape(u8, u32),
     End,
@@ -63,7 +44,7 @@ impl TokenizerState {
             state: TokenState::None,
             parser: ParserState::new(),
 
-            string_state: StringState::None,
+            string_state: StringState::None(utf8::UTF8_ACCEPT),
             string_start: 0.into(),
         }
     }
@@ -93,40 +74,22 @@ impl TokenizerState {
     }
 
     #[cfg(not(feature = "use_simd"))]
-    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, initial_character: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
-        let mut length = 0;
+    fn validate_utf8<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, init_state: utf8::DecodeState, initial_character: u8) -> PResult<utf8::DecodeState, <Src as Source>::Bail> where Src: Source, Snk: Sink {
         let mut curr_char = initial_character;
+        let mut state = init_state;
 
-        // There is some code-repetition here, but having this fast-path
-        // more than doubles the speed of reading string data.
-        // I would say it is worth it.
         loop {
-            // When the length is 0, it means we have reached the boundry
-            // of a new unicode character, and should perform a new
-            // length lookup.
-            if length == 0 {
-                length = UTF8_CHAR_WIDTH[curr_char as usize];
-                // If the length is 0 from the LUT, it means the character
-                // just read was invalid UTF8. Report a parse error.
-                if length == 0 {
-                    if curr_char == b'\\' || curr_char == b'"' {
-                        break;
-                    }
-                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
-                }
-                // If we see some other actionable character, bail
-                // from the fast-path, and do a full match.
-            } else {
-                // When in the middle of a UTF8 character, we simply
-                // need to validate that the two most significant bits
-                // of the byte are 10.
-                let valid = (curr_char & 0b11000000) == 0b10000000;
-                if !valid {
-                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
+            state = utf8::decode(state, curr_char);
+            if utf8::should_stop(state) {
+                match state {
+                    utf8::UTF8_REJECT =>
+                        return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8)),
+                    utf8::UTF8_SPECIAL =>
+                        break,
+                    _ => unreachable!(),
                 }
             }
 
-            length -= 1;
             ss.source.skip(1);
 
             curr_char = match ss.source.peek_char() {
@@ -137,17 +100,14 @@ impl TokenizerState {
                     // When we receive a bail signal, we need to set
                     // the string state so that we can continue from
                     // where we left off.
-                    if length == 0 {
-                        self.string_state = StringState::None;
-                    } else {
-                        self.string_state = StringState::Codepoint(length);
-                    }
+                    self.string_state = StringState::None(state);
                     return Err(ParseError::SourceBail(bail));
                 },
             }
         }
 
-        Ok(())
+        self.string_state = StringState::None(state);
+        Ok(state)
     }
 
     #[cfg(all(feature = "use_simd", target_feature = "sse2", target_feature = "ssse3"))]
@@ -272,14 +232,18 @@ impl TokenizerState {
         loop {
             match (self.string_state, ss.source.peek_char()) {
 
+                (StringState::None(utf8::UTF8_REJECT), _) => {
+                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
+                },
+
                 // Processes characters normally.
                 // This should be the fast-path as it is the most common.
-                (StringState::None, Ok(character)) => {
-                    match character {
+                (StringState::None(state), Ok(character)) => {
+                    match (character, state) {
                         // We reached the end of the string (unescaped quote).
                         // Return the last part of the string now, quote token
                         // next time.
-                        b'"' => {
+                        (b'"', utf8::UTF8_ACCEPT) | (b'"', utf8::UTF8_SPECIAL) => {
                             let range = Range::new(self.string_start, ss.source.position());
                             self.string_start = ss.source.position();
                             self.string_state = StringState::End;
@@ -291,7 +255,7 @@ impl TokenizerState {
                         },
                         // Got a backslash, emit the string part we have and
                         // expect something escaped next.
-                        b'\\' => {
+                        (b'\\', utf8::UTF8_ACCEPT) | (b'\\', utf8::UTF8_SPECIAL) => {
                             let range = Range::new(self.string_start, ss.source.position());
 
                             self.string_state = StringState::StartEscape;
@@ -303,29 +267,15 @@ impl TokenizerState {
                         },
                         // Normal characters.
                         // Use fast-path.
-                        _ => self.validate_utf8(ss, character)?,
+                        (_, utf8::UTF8_SPECIAL) => unreachable!(),
+                        (_, utf8_state) =>
+                            self.string_state = StringState::None(
+                                self.validate_utf8(ss, utf8_state, character)?),
                     }
                 },
 
                 (StringState::End, _) => {
                     break;
-                },
-
-                // We are in the middle of reading a unicode codepoint.
-                // Validate the next characters.
-                (StringState::Codepoint(num_left), Ok(character)) => {
-                    let valid = (character & 0b11000000) == 0b10000000;
-                    if valid {
-                        self.string_state = match num_left {
-                            1 => StringState::None,
-                            2 => StringState::Codepoint(1),
-                            3 => StringState::Codepoint(2),
-                            _ => unreachable!(),
-                        };
-                        ss.source.skip(1);
-                    } else {
-                        return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
-                    }
                 },
 
                 // The last character was a backslash.
@@ -334,7 +284,7 @@ impl TokenizerState {
                     match character {
                         b'"' | b'\\' | b'/' => {
                             self.string_start = ss.source.position();
-                            self.string_state = StringState::None;
+                            self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                             ss.source.skip(1);
                         },
                         b'u' => {
@@ -350,7 +300,7 @@ impl TokenizerState {
                                 b't' => b'\t',
                                 _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidEscape)),
                             };
-                            self.string_state = StringState::None;
+                            self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                             ss.source.skip(1);
                             self.string_start = ss.source.position();
                             self.parser.token_string_single(ss, escaped)?;
@@ -375,7 +325,7 @@ impl TokenizerState {
 
                     ss.source.skip(1);
                     if *count == 0 {
-                        self.string_state = StringState::None;
+                        self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                         self.string_start = ss.source.position();
                         if let Some(character) = ::std::char::from_u32(*codepoint) {
                             self.parser.token_string_codepoint(ss, character)?;
@@ -463,7 +413,7 @@ impl TokenizerState {
                         }
                         b'"' => {
                             self.string_start = ss.source.position();
-                            self.string_state = StringState::None;
+                            self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                             self.state = TokenState::String;
                             self.parser.token_quote(ss)?;
                         }

@@ -9,6 +9,7 @@ pub mod sink;
 pub mod input;
 pub mod error;
 pub mod source;
+mod utf8;
 
 pub type PResult<T, SourceBail> = Result<T, error::ParseError<SourceBail>>;
 
