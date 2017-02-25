@@ -12,7 +12,7 @@ pub mod source;
 pub mod decoder;
 mod utf8;
 
-pub use error::ParseError;
+pub use error::{ParseError, Unexpected};
 
 pub use input::{Range, Pos};
 pub use source::{Source, SourceError};

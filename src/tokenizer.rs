@@ -36,6 +36,11 @@ pub struct TokenizerState {
     string_start: Pos,
 }
 
+macro_rules! unexpected {
+    ($ss:expr, $reason:expr) => {
+        Err(ParseError::Unexpected($ss.source.position(), $reason))
+    }
+}
 
 impl TokenizerState {
 
@@ -82,7 +87,7 @@ impl TokenizerState {
             state = utf8::decode(state, curr_char);
             match state {
                 utf8::UTF8_REJECT =>
-                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8)),
+                    return unexpected!(ss, Unexpected::InvalidUtf8),
                 utf8::UTF8_SPECIAL =>
                     break,
                 _ => (),
@@ -231,7 +236,7 @@ impl TokenizerState {
             match (self.string_state, ss.source.peek_char()) {
 
                 (StringState::None(utf8::UTF8_REJECT), _) => {
-                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
+                    return unexpected!(ss, Unexpected::InvalidUtf8);
                 },
 
                 // Processes characters normally.
@@ -291,12 +296,12 @@ impl TokenizerState {
                         },
                         _ => {
                             let escaped = match character {
-                                b'b' => 0x62,
-                                b'f' => 0x66,
+                                b'b' => 0x08,
+                                b'f' => 0x0c,
                                 b'n' => b'\n',
                                 b'r' => b'\r',
                                 b't' => b'\t',
-                                _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidEscape)),
+                                _ => return unexpected!(ss, Unexpected::InvalidEscape),
                             };
                             self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                             ss.source.skip(1);
@@ -318,7 +323,7 @@ impl TokenizerState {
                         b'A'...b'F' => *codepoint |= (byte - b'A' + 10) as u32,
                         b'a'...b'f' => *codepoint |= (byte - b'a' + 10) as u32,
                         b'0'...b'9' => *codepoint |= (byte - b'0') as u32,
-                        _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidEscapeHex)),
+                        _ => return unexpected!(ss, Unexpected::InvalidEscapeHex),
                     }
 
                     ss.source.skip(1);
@@ -328,7 +333,7 @@ impl TokenizerState {
                         if let Some(character) = ::std::char::from_u32(*codepoint) {
                             self.parser.token_string_codepoint(ss, character)?;
                         } else {
-                            return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8))
+                            return unexpected!(ss, Unexpected::InvalidUtf8);
                         }
                     } else {
                         self.string_state = StringState::UnicodeEscape(*count, *codepoint);
@@ -337,7 +342,7 @@ impl TokenizerState {
 
                 // Errors
                 (_, Err(SourceError::Eof)) =>
-                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::Eof)),
+                    return unexpected!(ss, Unexpected::Eof),
                 (_, Err(SourceError::Bail(bt))) =>
                     return Err(ParseError::SourceBail(bt)),
             }
@@ -415,7 +420,7 @@ impl TokenizerState {
                             self.state = TokenState::String;
                             self.parser.token_quote(ss)?;
                         }
-                        _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::Character)),
+                        _ => return unexpected!(ss, Unexpected::Character),
                     }
                 }
             }
@@ -430,7 +435,7 @@ impl TokenizerState {
                 if self.parser.finished() {
                     Ok(())
                 } else {
-                    Err(ParseError::Unexpected(ss.source.position(), Unexpected::Eof))
+                    unexpected!(ss, Unexpected::Eof)
                 }
             },
             Err(err) => Err(err),

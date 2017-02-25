@@ -232,3 +232,46 @@ fn fuzz_panic_4() {
     let result = parse_to_enum(input);
     assert!(result.is_err());
 }
+
+// https://tools.ietf.org/html/rfc7159#section-9
+// "An implementation MAY accept non-JSON forms or extensions."
+const ACCEPTABLE_SUCCESSES: [usize; 5] = [
+    1, // Allow root value to be a string
+    4, // Allow trailing comma in array
+    9, // Allow trailing comma in object
+    13, // TODO: Disallow leading zeroes in numbers
+
+    // (This seems to be implementation-specific for json_checker?)
+    18, // Allow deeply nested arrays
+];
+
+#[test]
+fn json_checker_test_suite() {
+    use ::std::fs::File;
+    use ::std::io::Read;
+
+    // Fail cases
+    for num in 1..34 {
+        println!("current: fail{}.json", num);
+        let mut file = File::open(format!("tests/data/fail{}.json", num)).unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+
+        let result = parse_to_enum(&buf);
+        if !ACCEPTABLE_SUCCESSES.contains(&num) {
+            assert!(result.is_err());
+        }
+    }
+
+    // Pass cases
+    for num in 1..4 {
+        println!("current: pass{}.json", num);
+        let mut file = File::open(format!("tests/data/pass{}.json", num)).unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+
+        let result = parse_to_enum(&buf);
+        assert!(result.is_ok());
+    }
+
+}
