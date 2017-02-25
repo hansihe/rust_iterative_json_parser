@@ -19,7 +19,7 @@ pub enum Json {
 /// Intended for testing, copies like crazy.
 #[derive(Debug)]
 pub struct EnumSink<'a> {
-    stack: Vec<Json>,
+    pub stack: Vec<Json>,
     source: &'a [u8],
     current_string: Vec<u8>,
 }
@@ -39,6 +39,7 @@ impl<'a> EnumSink<'a> {
     }
 
     pub fn to_result(mut self) -> Json {
+        //println!("to_result: {:?}", self);
         if self.stack.len() != 1 {
             panic!("Result not ready.");
         }
@@ -83,7 +84,11 @@ impl<'a> Sink for EnumSink<'a> {
     fn append_string_single(&mut self, character: u8) {
         self.current_string.push(character);
     }
-    fn append_string_codepoint(&mut self, codepoint: char) {unreachable!();}
+    fn append_string_codepoint(&mut self, codepoint: char) {
+        let mut buf: [u8; 4] = [0, 0, 0, 0];
+        let codepoint_slice = codepoint.encode_utf8(&mut buf);
+        self.current_string.extend_from_slice(codepoint_slice.as_bytes());
+    }
     fn finalize_string(&mut self) {
         let mut done_string = Vec::new();
         ::std::mem::swap(&mut done_string, &mut self.current_string);

@@ -1,0 +1,59 @@
+digraph parser_fsm {
+
+//"Start" -> "Object.KeyEnd" [ label="{ (stack push object)" ];
+//"Start" -> "Array.ValueEnd" [ label="[ (stack push array)" ];
+//
+//"Object.KeyEnd" -> "Object.Key" [ label="\"" ];
+//
+//"Array.ValueEnd" -> "ReadValue";
+//"ReadValue" -> "Array.CommaEnd" [ label="bool" ];
+//"ReadValue" -> "Array.CommaEnd" [ label="null" ];
+//
+//"Array.CommaEnd" -> "Array.Value" [ label="," ];
+//"Array.Value" -> "0";
+//
+//"Object.KeyEnd" -> "End" [ label="} (stack pop object)" ];
+//"Array.ValueEnd" -> "End" [ label="] (stack pop array)" ];
+
+// Primitives
+"read value" -> "end read value" [ label="bool" ];
+"read value" -> "end read value" [ label="null" ];
+
+// String
+"read value" -> "String" [ label="quote" ];
+"String" -> "end read value" [ label="quote" ];
+
+// Number
+"read value" -> "Num.Integer" [ label="sign" ];
+"read value" -> "Num.DotExponentEnd" [ label="number" ];
+"Num.Integer" -> "Num.DotExponentEnd" [ label="number" ];
+"Num.DotExponentEnd" -> "end read value";
+"Num.DotExponentEnd" -> "Num.ExponentSign" [ label="'e'" ];
+"Num.DotExponentEnd" -> "Num.Decimal" [ label="." ];
+"Num.Decimal" -> "Num.ExponentEnd" [ label="number" ];
+"Num.ExponentEnd" -> "Num.ExponentSign" [ label="'e'" ];
+"Num.ExponentEnd" -> "end read value";
+"Num.ExponentSign" -> "Num.Exponent" [ label="sign" ];
+"Num.ExponentSign" -> "end read value" [ label="number" ];
+"Num.Exponent" -> "end read value" [ label="number" ];
+
+// Object
+"read value" -> "Object.KeyEnd" [ label="{ (push object)" ];
+"Object.KeyEnd" -> "Object.KeyString" [ label="\"" ];
+"Object.KeyString" -> "Object.Colon" [ label="\"" ];
+"Object.Colon" -> "read value" [ label=":" ];
+
+"end read value" -> "Object.CommaEnd" [ label="if last on stack is object" ];
+"Object.CommaEnd" -> "Object.KeyEnd" [ label="comma" ];
+"Object.CommaEnd" -> "end read value" [ label="} (pop array)" ];
+
+// Array
+"read value" -> "Array.ValueEnd" [ label="[ (push array)" ];
+"Array.ValueEnd" -> "read value";
+"Array.ValueEnd" -> "end read value" [ label="] (pop array)" ];
+
+"end read value" -> "Array.CommaEnd" [ label="if last on stack is array" ];
+"Array.CommaEnd" -> "Array.ValueEnd" [ label="comma" ];
+"Array.CommaEnd" -> "end read value" [ label="] (pop array)" ];
+
+}

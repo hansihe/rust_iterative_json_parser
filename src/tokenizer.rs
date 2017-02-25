@@ -1,5 +1,5 @@
 use ::PResult;
-use ::error::ParseError;
+use ::error::{ParseError, Unexpected};
 use ::input::{Pos, Range};
 use ::source::{Source, SourceError};
 use ::sink::Sink;
@@ -111,9 +111,8 @@ impl TokenizerState {
                 if length == 0 {
                     if curr_char == b'\\' || curr_char == b'"' {
                         break;
-                    } else {
-                        return Err(ParseError::Unexpected(ss.source.position()));
                     }
+                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
                 }
                 // If we see some other actionable character, bail
                 // from the fast-path, and do a full match.
@@ -123,7 +122,7 @@ impl TokenizerState {
                 // of the byte are 10.
                 let valid = (curr_char & 0b11000000) == 0b10000000;
                 if !valid {
-                    return Err(ParseError::Unexpected(ss.source.position()));
+                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
                 }
             }
 
@@ -303,73 +302,8 @@ impl TokenizerState {
                             }
                         },
                         // Normal characters.
-                        // Skip and emit a range when we reach something else.
-                        _ => {
-                            self.validate_utf8(ss, character)?
-
-                            //let mut length = 0;
-                            //let mut curr_char = character;
-
-                            //// There is some code-repetition here, but having this fast-path
-                            //// more than doubles the speed of reading string data.
-                            //// I would say it is worth it.
-                            //loop {
-                            //    // When the length is 0, it means we have reached the boundry
-                            //    // of a new unicode character, and should perform a new
-                            //    // length lookup.
-                            //    if length == 0 {
-                            //        length = UTF8_CHAR_WIDTH[curr_char as usize];
-                            //        // If the length is 0 from the LUT, it means the character
-                            //        // just read was invalid UTF8. Report a parse error.
-                            //        if length == 0 {
-                            //            return Err(ParseError::Unexpected(ss.source.position()));
-                            //        }
-                            //        // If we see some other actionable character, bail
-                            //        // from the fast-path, and do a full match.
-                            //        if curr_char == b'\\' || curr_char == b'"' {
-                            //            break;
-                            //        }
-                            //    } else {
-                            //        // When in the middle of a UTF8 character, we simply
-                            //        // need to validate that the two most significant bits
-                            //        // of the byte are 10.
-                            //        let valid = (curr_char & 0b11000000) == 0b10000000;
-                            //        if !valid {
-                            //            return Err(ParseError::Unexpected(ss.source.position()));
-                            //        }
-                            //    }
-
-                            //    length -= 1;
-                            //    ss.source.skip(1);
-
-                            //    curr_char = match ss.source.peek_char() {
-                            //        Ok(character) => character,
-                            //        Err(SourceError::Eof) =>
-                            //            return Err(ParseError::Eof),
-                            //        Err(SourceError::Bail(bail)) => {
-                            //            // When we receive a bail signal, we need to set
-                            //            // the string state so that we can continue from
-                            //            // where we left off.
-                            //            if length != 0 {
-                            //                self.string_state = StringState::None;
-                            //            } else {
-                            //                self.string_state = StringState::Codepoint(length);
-                            //            }
-                            //            return Err(ParseError::SourceBail(bail));
-                            //        },
-                            //    }
-                            //}
-
-                            //// TODO: OPT: Check characters inline
-                            //match length {
-                            //    0 => return Err(ParseError::Unexpected(ss.source.position())),
-                            //    1 => (),
-                            //    length => {
-                            //        self.string_state = StringState::Codepoint(length - 2)
-                            //    },
-                            //}
-                            //ss.source.skip(1);
-                        },
+                        // Use fast-path.
+                        _ => self.validate_utf8(ss, character)?,
                     }
                 },
 
@@ -390,7 +324,7 @@ impl TokenizerState {
                         };
                         ss.source.skip(1);
                     } else {
-                        return Err(ParseError::Unexpected(ss.source.position()));
+                        return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8));
                     }
                 },
 
@@ -414,7 +348,7 @@ impl TokenizerState {
                                 b'n' => b'\n',
                                 b'r' => b'\r',
                                 b't' => b'\t',
-                                _ => return Err(ParseError::Unexpected(ss.source.position())),
+                                _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidEscape)),
                             };
                             self.string_state = StringState::None;
                             ss.source.skip(1);
@@ -436,14 +370,18 @@ impl TokenizerState {
                         b'A'...b'F' => *codepoint |= (byte - b'A' + 10) as u32,
                         b'a'...b'f' => *codepoint |= (byte - b'a' + 10) as u32,
                         b'0'...b'9' => *codepoint |= (byte - b'0') as u32,
-                        _ => return Err(ParseError::Unexpected(ss.source.position())),
+                        _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidEscapeHex)),
                     }
 
                     ss.source.skip(1);
                     if *count == 0 {
                         self.string_state = StringState::None;
                         self.string_start = ss.source.position();
-                        self.parser.token_string_codepoint(ss, ::std::char::from_u32(*codepoint).unwrap())?;
+                        if let Some(character) = ::std::char::from_u32(*codepoint) {
+                            self.parser.token_string_codepoint(ss, character)?;
+                        } else {
+                            return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8))
+                        }
                     } else {
                         self.string_state = StringState::UnicodeEscape(*count, *codepoint);
                     }
@@ -451,7 +389,7 @@ impl TokenizerState {
 
                 // Errors
                 (_, Err(SourceError::Eof)) =>
-                    return Err(ParseError::Unexpected(ss.source.position())),
+                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::Eof)),
                 (_, Err(SourceError::Bail(bt))) =>
                     return Err(ParseError::SourceBail(bt)),
             }
@@ -472,8 +410,7 @@ impl TokenizerState {
                 Ok(_) => break,
 
                 // Errors
-                Err(SourceError::Eof) =>
-                    return Err(ParseError::Unexpected(ss.source.position())),
+                Err(SourceError::Eof) => break,
                 Err(SourceError::Bail(bt)) =>
                     return Err(ParseError::SourceBail(bt)),
             }
@@ -530,7 +467,7 @@ impl TokenizerState {
                             self.state = TokenState::String;
                             self.parser.token_quote(ss)?;
                         }
-                        _ => return Err(ParseError::Unexpected(ss.source.position())),
+                        _ => return Err(ParseError::Unexpected(ss.source.position(), Unexpected::Character)),
                     }
                 }
             }
@@ -541,10 +478,11 @@ impl TokenizerState {
         match self.do_run(ss) {
             Ok(()) => unreachable!(),
             Err(ParseError::Eof) => {
+                self.parser.finish(ss);
                 if self.parser.finished() {
                     Ok(())
                 } else {
-                    Err(ParseError::Eof)
+                    Err(ParseError::Unexpected(ss.source.position(), Unexpected::Eof))
                 }
             },
             Err(err) => Err(err),

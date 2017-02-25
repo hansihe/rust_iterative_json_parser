@@ -1,0 +1,17 @@
+
+[package]
+name = "iterative_json_parser-fuzz"
+version = "0.0.1"
+authors = ["Automatically generated"]
+publish = false
+
+[dependencies.iterative_json_parser]
+path = ".."
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzzer_script_1"
+path = "fuzzers/fuzzer_script_1.rs"

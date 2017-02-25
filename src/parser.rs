@@ -1,7 +1,7 @@
 use ::PResult;
 use ::tokenizer::{ SS };
 use ::sink::Sink;
-use ::error::ParseError;
+use ::error::{ParseError, Unexpected};
 use ::input::Range;
 use ::source::Source;
 
@@ -46,27 +46,64 @@ impl Default for NumberData {
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum StackState {
     Array,
-    Object(ObjectState),
+    Object,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum TopState {
     None,
-    ReadValue,
-    String,
-    Number(NumberState),
+
+    ArrayCommaEnd,
+
+    ObjectKeyEnd,
+    ObjectColon,
+    ObjectCommaEnd,
+
+    Number(TopStateContext),
+    String(TopStateContext),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum TopStateContext {
+    None,
+    ObjectKey,
+    ObjectValue,
+    ArrayValue,
+}
+impl TopStateContext {
+    fn from_topstate(state: TopState) -> TopStateContext {
+        match state {
+            TopState::None => TopStateContext::None,
+            TopState::ObjectKeyEnd => TopStateContext::ObjectKey,
+            TopState::ObjectCommaEnd => TopStateContext::ObjectValue,
+            TopState::ArrayCommaEnd => TopStateContext::ArrayValue,
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub struct ParserState {
     stack: Vec<StackState>,
+
     state: TopState,
+    read_value: bool,
+
+    number_state: NumberState,
     number_data: NumberData,
-    started: bool,
 }
 
 macro_rules! unexpected {
-    ($ss:expr) => { Err(ParseError::Unexpected($ss.source.position())) }
+    ($ss:expr, $reason:expr) => { Err(ParseError::Unexpected($ss.source.position(), $reason)) }
+}
+
+macro_rules! matches {
+    ($e:expr, $p:pat) => {
+        match $e {
+            $p => true,
+            _ => false,
+        }
+    };
 }
 
 fn log_token(token: &str) {
@@ -79,37 +116,58 @@ impl ParserState {
     pub fn new() -> Self {
         ParserState {
             stack: vec![],
-            state: TopState::ReadValue,
+
+            state: TopState::None,
+            read_value: true,
+
+            number_state: NumberState::Integer,
             number_data: NumberData::default(),
-            started: false,
         }
     }
 
-    pub fn close_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
-        match self.state {
-            TopState::Number(NumberState::DotExponentEnd) |
-            TopState::Number(NumberState::ExponentStartEnd) => {
-                self.state = TopState::None;
-                let mut number_data = NumberData::default();
-                ::std::mem::swap(&mut number_data, &mut self.number_data);
-                ss.sink.push_number(number_data);
-                Ok(())
-            },
-            _ => unexpected!(ss),
-        }
+    fn handle_end_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, next: TopStateContext) -> bool where Src: Source, Snk: Sink {
+        if self.number_state != NumberState::ExponentStartEnd
+            && self.number_state != NumberState::DotExponentEnd {
+                return false;
+            }
+
+        ss.sink.push_number(self.number_data.clone());
+
+        self.state = match next {
+            TopStateContext::None => TopState::None,
+            TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
+            TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
+            TopStateContext::ObjectKey => unreachable!(),
+        };
+
+        true
     }
 
     pub fn token_object_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("object_open");
 
-        if self.state != TopState::ReadValue {
-            return unexpected!(ss);
+        if !self.read_value {
+            return unexpected!(ss, Unexpected::ObjectOpen);
         }
+        self.read_value = false;
 
-        self.state = TopState::None;
-        self.stack.push(StackState::Object(ObjectState::KeyEnd));
         ss.sink.push_map();
+        self.stack.push(StackState::Object);
+        self.state = TopState::ObjectKeyEnd;
+        Ok(())
+    }
 
+    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+        log_token("array_open");
+
+        if !self.read_value {
+            return unexpected!(ss, Unexpected::ArrayOpen);
+        }
+        self.read_value = true;
+
+        ss.sink.push_array();
+        self.stack.push(StackState::Array);
+        self.state = TopState::ArrayCommaEnd;
         Ok(())
     }
 
@@ -117,40 +175,46 @@ impl ParserState {
         log_token("object_close");
 
         match self.state {
-            TopState::None => {},
-            TopState::ReadValue => {
-                self.state = TopState::None;
-            },
-            TopState::Number(_) => self.close_number(ss)?,
-            _ => return unexpected!(ss),
-        }
+            // An object end can only occur if we are waiting for a comma or waiting
+            // for a key. We are diverging a bit from the spec here, and are allowing
+            // trailing commas. This makes the state machine a bit simpler, and I like
+            // trailing commas,
+            TopState::ObjectKeyEnd | TopState::ObjectCommaEnd | TopState::Number(TopStateContext::ObjectValue) => {
+                if let TopState::Number(context) = self.state {
+                    if !self.handle_end_number(ss, context) {
+                        return unexpected!(ss, Unexpected::ObjectClose);
+                    }
+                }
 
-        match *self.stack.last().unwrap() {
-            StackState::Object(ObjectState::KeyEnd) => {
-                self.stack.pop().unwrap();
+                // If the read_value flag is not set, it means we just read in a value
+                // and need to pop_into_map.
+                if !self.read_value && self.state == TopState::ObjectCommaEnd {
+                    ss.sink.pop_into_map();
+                }
+
+                if self.read_value && self.state == TopState::ObjectCommaEnd {
+                    return unexpected!(ss, Unexpected::ObjectClose);
+                }
+
+                self.read_value = false;
                 ss.sink.finalize_map();
-                Ok(())
-            },
-            StackState::Object(ObjectState::CommaEnd) => {
+
+                // Because it is impossible to end up in a TopState::Object* without
+                // the top value on the stack being an StackState::Object, we can be
+                // sure that there is a value for us to pop, and that it, in fact, is
+                // a StackState::Object.
                 self.stack.pop().unwrap();
-                ss.sink.pop_into_map();
-                ss.sink.finalize_map();
-                Ok(())
+
+                // Look at the last value on the stack to determine what our next state
+                // should be.
+                self.state = match self.stack.last() {
+                    Some(&StackState::Object) => TopState::ObjectCommaEnd,
+                    Some(&StackState::Array) => TopState::ArrayCommaEnd,
+                    None => TopState::None,
+                };
             },
-            _ => unexpected!(ss),
+            _ => return unexpected!(ss, Unexpected::ObjectClose),
         }
-    }
-
-    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
-        log_token("array_open");
-
-        if self.state != TopState::ReadValue {
-            return unexpected!(ss);
-        }
-
-        self.state = TopState::ReadValue;
-        self.stack.push(StackState::Array);
-        ss.sink.push_array();
 
         Ok(())
     }
@@ -159,195 +223,229 @@ impl ParserState {
         log_token("array_close");
 
         match self.state {
-            TopState::None => {
-                ss.sink.pop_into_array();
+            TopState::ArrayCommaEnd | TopState::Number(TopStateContext::ArrayValue) => {
+                if let TopState::Number(context) = self.state {
+                    if !self.handle_end_number(ss, context) {
+                        return unexpected!(ss, Unexpected::ObjectClose);
+                    }
+                }
+
+                if !self.read_value {
+                    ss.sink.pop_into_array();
+                }
+                self.read_value = false;
+
+                ss.sink.finalize_array();
+
+                self.stack.pop().unwrap();
+
+                self.state = match self.stack.last() {
+                    Some(&StackState::Object) => TopState::ObjectCommaEnd,
+                    Some(&StackState::Array) => TopState::ArrayCommaEnd,
+                    None => TopState::None,
+                };
             },
-            TopState::ReadValue => {
-                self.state = TopState::None;
-            },
-            TopState::Number(_) => {
-                self.close_number(ss)?;
-                ss.sink.pop_into_array();
-            },
-            _ => return unexpected!(ss),
+            _ => return unexpected!(ss, Unexpected::ObjectClose),
         }
 
-        match *self.stack.last().unwrap() {
-            StackState::Array => {
-                self.stack.pop().unwrap();
-                ss.sink.finalize_array();
-                Ok(())
-            },
-            _ => unexpected!(ss),
-        }
+        Ok(())
     }
 
     pub fn token_comma<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("comma");
 
         match self.state {
-            TopState::None => {},
-            TopState::Number(_) => self.close_number(ss)?,
-            _ => return unexpected!(ss)
+            TopState::ObjectCommaEnd if !self.read_value => {
+                ss.sink.pop_into_map();
+                self.state = TopState::ObjectKeyEnd;
+            },
+            TopState::ArrayCommaEnd if !self.read_value => {
+                ss.sink.pop_into_array();
+                self.read_value = true;
+            },
+            TopState::Number(context) => {
+                if !self.handle_end_number(ss, context) {
+                    return unexpected!(ss, Unexpected::Comma);
+                }
+                match self.state {
+                    TopState::ObjectCommaEnd => {
+                        ss.sink.pop_into_map();
+                        self.state = TopState::ObjectKeyEnd;
+                    },
+                    TopState::ArrayCommaEnd => {
+                        ss.sink.pop_into_array();
+                        self.read_value = true;
+                    },
+                    _ => return unexpected!(ss, Unexpected::Comma),
+                }
+            },
+            _ => return unexpected!(ss, Unexpected::Comma),
         }
 
-        match *self.stack.last_mut().unwrap() {
-            StackState::Array => {
-                self.state = TopState::ReadValue;
-                ss.sink.pop_into_array();
-                Ok(())
-            },
-            StackState::Object(ref mut state @ ObjectState::CommaEnd) => {
-                *state = ObjectState::Key;
-                ss.sink.pop_into_map();
-                Ok(())
-            },
-            _ => unexpected!(ss),
-        }
+        Ok(())
     }
 
     pub fn token_colon<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("colon");
 
-        match *self.stack.last_mut().unwrap() {
-            StackState::Object(ref mut state @ ObjectState::Colon) => {
-                self.state = TopState::ReadValue;
-                *state = ObjectState::CommaEnd;
-                Ok(())
+        match self.state {
+            TopState::ObjectColon => {
+                self.state = TopState::ObjectCommaEnd;
+                self.read_value = true;
             },
-            _ => unexpected!(ss),
+            _ => return unexpected!(ss, Unexpected::Colon),
         }
+
+        Ok(())
     }
 
     pub fn token_exponent<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("exponent");
 
-        match self.state {
-            TopState::Number(ref mut state @ NumberState::DotExponentEnd) => {
-                *state = NumberState::ExponentSign;
-                Ok(())
-            },
-            TopState::Number(ref mut state @ NumberState::ExponentStartEnd) => {
-                *state = NumberState::ExponentSign;
-                Ok(())
-            },
-            _ => unexpected!(ss),
+        if !matches!(self.state, TopState::Number(_)) {
+            return unexpected!(ss, Unexpected::Exponent);
         }
+
+        self.number_state = match self.number_state {
+            NumberState::DotExponentEnd => NumberState::ExponentSign,
+            NumberState::ExponentStartEnd => NumberState::ExponentSign,
+            _ => return unexpected!(ss, Unexpected::Exponent),
+        };
+
+        Ok(())
     }
 
     pub fn token_dot<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("dot");
 
-        match self.state {
-            TopState::Number(ref mut state @ NumberState::DotExponentEnd) => {
-                *state = NumberState::Decimal;
-                Ok(())
-            },
-            _ => unexpected!(ss),
-        }
+        if !matches!(self.state, TopState::Number(_))
+            || self.number_state != NumberState::DotExponentEnd {
+                return unexpected!(ss, Unexpected::Dot);
+            }
+        self.number_state = NumberState::Decimal;
+
+        Ok(())
     }
 
     pub fn token_sign<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, sign: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("sign");
 
         match self.state {
-            TopState::ReadValue => {
-                self.state = TopState::Number(NumberState::Integer);
+            TopState::Number(_) => {
+                if self.number_state != NumberState::ExponentSign {
+                    return unexpected!(ss, Unexpected::Sign);
+                }
+                self.number_data.exponent_sign = sign;
+                self.number_state = NumberState::Exponent;
+            },
+            _ => {
+                if !self.read_value {
+                    return unexpected!(ss, Unexpected::Sign);
+                }
+                self.read_value = false;
                 self.number_data = NumberData::default();
                 self.number_data.sign = sign;
-                Ok(())
+                self.state = TopState::Number(TopStateContext::from_topstate(self.state));
+                self.number_state = NumberState::Integer;
             },
-            TopState::Number(ref mut state @ NumberState::ExponentSign) => {
-                *state = NumberState::Exponent;
-                self.number_data.exponent_sign = sign;
-                Ok(())
-            },
-            _ => unexpected!(ss),
         }
+
+        Ok(())
     }
 
     pub fn token_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("number");
 
         match self.state {
-            TopState::ReadValue |
-            TopState::Number(NumberState::Integer) => {
-                self.state = TopState::Number(NumberState::DotExponentEnd);
+            TopState::Number(context) => {
+                match self.number_state {
+                    NumberState::Integer => {
+                        self.number_data.integer = range;
+                        self.number_state = NumberState::DotExponentEnd;
+                    },
+                    NumberState::Decimal => {
+                        self.number_data.decimal = Some(range);
+                        self.number_state = NumberState::ExponentStartEnd;
+                    },
+                    NumberState::ExponentSign | NumberState::Exponent => {
+                        self.number_data.exponent = Some(range);
+                        ss.sink.push_number(self.number_data.clone());
+                        self.state = match context {
+                            TopStateContext::None => TopState::None,
+                            TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
+                            TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
+                            TopStateContext::ObjectKey => unreachable!(),
+                        };
+                    },
+                    _ => return unexpected!(ss, Unexpected::Number),
+                }
+            },
+            _ => {
+                if !self.read_value {
+                    return unexpected!(ss, Unexpected::Number);
+                }
+                self.read_value = false;
+                self.number_data = NumberData::default();
                 self.number_data.integer = range;
-                Ok(())
+                self.number_state = NumberState::DotExponentEnd;
+                self.state = TopState::Number(TopStateContext::from_topstate(self.state));
             },
-            TopState::Number(ref mut state @ NumberState::Decimal) => {
-                *state = NumberState::ExponentStartEnd;
-                self.number_data.decimal = Some(range);
-                Ok(())
-            },
-            TopState::Number(NumberState::ExponentSign) |
-            TopState::Number(NumberState::Exponent) => {
-                self.state = TopState::None;
-                self.number_data.exponent = Some(range);
-                let mut number_data = NumberData::default();
-                ::std::mem::swap(&mut number_data, &mut self.number_data);
-                ss.sink.push_number(number_data);
-                Ok(())
-            },
-            _ => unexpected!(ss),
         }
+
+        Ok(())
     }
 
     pub fn token_bool<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, value: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("bool");
 
-        match self.state {
-            TopState::ReadValue => {
-                self.state = TopState::None;
-                ss.sink.push_bool(value);
-                Ok(())
-            },
-            _ => unexpected!(ss),
+        if !self.read_value {
+            return unexpected!(ss, Unexpected::Bool);
         }
+        self.read_value = false;
+
+        ss.sink.push_bool(value);
+
+        Ok(())
     }
 
     pub fn token_null<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("null");
 
-        match self.state {
-            TopState::ReadValue => {
-                self.state = TopState::None;
-                ss.sink.push_null();
-                Ok(())
-            }
-            _ => unexpected!(ss),
+        if !self.read_value {
+            return unexpected!(ss, Unexpected::Bool);
         }
+        self.read_value = false;
+
+        ss.sink.push_null();
+
+        Ok(())
     }
 
     pub fn token_quote<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
         log_token("quote");
 
         match self.state {
-            TopState::None => {
-                match *self.stack.last_mut().unwrap() {
-                    StackState::Object(ref mut state @ ObjectState::Key) |
-                    StackState::Object(ref mut state @ ObjectState::KeyEnd) => {
-                        *state = ObjectState::Colon;
-                        self.state = TopState::String;
-                        ss.sink.start_string();
-                        Ok(())
-                    },
-                    _ => unexpected!(ss),
-                }
-            },
-            TopState::ReadValue => {
-                self.state = TopState::String;
-                ss.sink.start_string();
-                Ok(())
-            },
-            TopState::String => {
-                self.state = TopState::None;
+            TopState::String(context) => {
+                self.state = match context {
+                    TopStateContext::None => TopState::None,
+                    TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
+                    TopStateContext::ObjectKey => TopState::ObjectColon,
+                    TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
+                };
                 ss.sink.finalize_string();
-                Ok(())
             },
-            _ => unexpected!(ss),
+            _ => {
+                if !self.read_value && !(self.state == TopState::ObjectKeyEnd) {
+                    return unexpected!(ss, Unexpected::Quote);
+                }
+
+                self.read_value = false;
+                self.state = TopState::String(TopStateContext::from_topstate(self.state));
+                ss.sink.start_string();
+            },
         }
+
+        Ok(())
     }
 
     // Tokenizer guarantees that these are only called between token_quotes.
@@ -370,8 +468,14 @@ impl ParserState {
         Ok(())
     }
 
+    pub fn finish<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) where Src: Source, Snk: Sink {
+        if self.state == TopState::Number(TopStateContext::None) {
+            self.handle_end_number(ss, TopStateContext::None);
+        }
+    }
+
     pub fn finished(&self) -> bool {
-        self.stack.len() == 0
+        self.state == TopState::None && self.stack.len() == 0 && !self.read_value
     }
 
 }

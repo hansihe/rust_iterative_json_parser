@@ -1,0 +1,11 @@
+[root]
+name = "iterative_json_parser-fuzz"
+version = "0.0.1"
+dependencies = [
+ "iterative_json_parser 0.1.0",
+]
+
+[[package]]
+name = "iterative_json_parser"
+version = "0.1.0"
+
