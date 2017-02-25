@@ -80,14 +80,12 @@ impl TokenizerState {
 
         loop {
             state = utf8::decode(state, curr_char);
-            if utf8::should_stop(state) {
-                match state {
-                    utf8::UTF8_REJECT =>
-                        return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8)),
-                    utf8::UTF8_SPECIAL =>
-                        break,
-                    _ => unreachable!(),
-                }
+            match state {
+                utf8::UTF8_REJECT =>
+                    return Err(ParseError::Unexpected(ss.source.position(), Unexpected::InvalidUtf8)),
+                utf8::UTF8_SPECIAL =>
+                    break,
+                _ => (),
             }
 
             ss.source.skip(1);
@@ -103,7 +101,7 @@ impl TokenizerState {
                     self.string_state = StringState::None(state);
                     return Err(ParseError::SourceBail(bail));
                 },
-            }
+            };
         }
 
         self.string_state = StringState::None(state);

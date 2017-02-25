@@ -3,7 +3,7 @@
 // which also rejects control characters, double quotes and backslashes.
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct DecodeState(u8);
+pub struct DecodeState(pub u8);
 
 pub const UTF8_ACCEPT: DecodeState = DecodeState(0);
 pub const UTF8_REJECT: DecodeState = DecodeState(14);
@@ -72,7 +72,14 @@ const STATE_TRANSITIONS: [u8; 126] = [
 #[inline(always)]
 pub fn decode(state: DecodeState, byte: u8) -> DecodeState {
     let typ = CHAR_CLASSES[byte as usize];
+
+    // Baseline
     DecodeState(STATE_TRANSITIONS[(state.0 + typ) as usize])
+
+    // 14% slower
+    //unsafe {
+    //    DecodeState(*STATE_TRANSITIONS.get_unchecked((state.0 + typ) as usize))
+    //}
 }
 
 #[inline(always)]
