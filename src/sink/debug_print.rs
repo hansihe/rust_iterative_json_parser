@@ -1,3 +1,4 @@
+use ::Bailable;
 use super::{Sink, NumberData};
 use ::input::Range;
 
@@ -7,6 +8,10 @@ impl PrintSink {
     pub fn new() -> PrintSink {
         PrintSink {}
     }
+}
+
+impl Bailable for PrintSink {
+    type Bail = ();
 }
 
 impl Sink for PrintSink {

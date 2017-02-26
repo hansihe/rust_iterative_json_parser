@@ -82,11 +82,6 @@ pub fn decode(state: DecodeState, byte: u8) -> DecodeState {
     //}
 }
 
-#[inline(always)]
-pub fn should_stop(state: DecodeState) -> bool {
-    (state.0 & 0b00001111) == 14
-}
-
 #[cfg(test)]
 mod tests {
     use utf8::*;

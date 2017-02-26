@@ -1,17 +1,9 @@
 use ::PResult;
-use ::tokenizer::{ SS };
+use ::Bailable;
 use ::sink::Sink;
 use ::error::{ParseError, Unexpected};
 use ::input::Range;
 use ::source::Source;
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-enum ObjectState {
-    Key,
-    KeyEnd,
-    Colon,
-    CommaEnd,
-}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum NumberState {
@@ -94,7 +86,7 @@ pub struct ParserState {
 }
 
 macro_rules! unexpected {
-    ($ss:expr, $reason:expr) => { Err(ParseError::Unexpected($ss.source.position(), $reason)) }
+    ($ss:expr, $reason:expr) => { Err(ParseError::Unexpected($ss.position(), $reason)) }
 }
 
 macro_rules! matches {
@@ -125,13 +117,13 @@ impl ParserState {
         }
     }
 
-    fn handle_end_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, next: TopStateContext) -> bool where Src: Source, Snk: Sink {
+    fn handle_end_number<SS>(&mut self, ss: &mut SS, next: TopStateContext) -> bool where SS: Source + Sink + Bailable {
         if self.number_state != NumberState::ExponentStartEnd
             && self.number_state != NumberState::DotExponentEnd {
                 return false;
             }
 
-        ss.sink.push_number(self.number_data.clone());
+        ss.push_number(self.number_data.clone());
 
         self.state = match next {
             TopStateContext::None => TopState::None,
@@ -143,7 +135,7 @@ impl ParserState {
         true
     }
 
-    pub fn token_object_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_object_open<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("object_open");
 
         if !self.read_value {
@@ -151,13 +143,13 @@ impl ParserState {
         }
         self.read_value = false;
 
-        ss.sink.push_map();
+        ss.push_map();
         self.stack.push(StackState::Object);
         self.state = TopState::ObjectKeyEnd;
         Ok(())
     }
 
-    pub fn token_array_open<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_array_open<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("array_open");
 
         if !self.read_value {
@@ -165,13 +157,13 @@ impl ParserState {
         }
         self.read_value = true;
 
-        ss.sink.push_array();
+        ss.push_array();
         self.stack.push(StackState::Array);
         self.state = TopState::ArrayCommaEnd;
         Ok(())
     }
 
-    pub fn token_object_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_object_close<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("object_close");
 
         match self.state {
@@ -189,7 +181,7 @@ impl ParserState {
                 // If the read_value flag is not set, it means we just read in a value
                 // and need to pop_into_map.
                 if !self.read_value && self.state == TopState::ObjectCommaEnd {
-                    ss.sink.pop_into_map();
+                    ss.pop_into_map();
                 }
 
                 if self.read_value && self.state == TopState::ObjectCommaEnd {
@@ -197,7 +189,7 @@ impl ParserState {
                 }
 
                 self.read_value = false;
-                ss.sink.finalize_map();
+                ss.finalize_map();
 
                 // Because it is impossible to end up in a TopState::Object* without
                 // the top value on the stack being an StackState::Object, we can be
@@ -219,7 +211,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_array_close<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_array_close<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("array_close");
 
         match self.state {
@@ -231,11 +223,11 @@ impl ParserState {
                 }
 
                 if !self.read_value {
-                    ss.sink.pop_into_array();
+                    ss.pop_into_array();
                 }
                 self.read_value = false;
 
-                ss.sink.finalize_array();
+                ss.finalize_array();
 
                 self.stack.pop().unwrap();
 
@@ -251,16 +243,16 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_comma<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_comma<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("comma");
 
         match self.state {
             TopState::ObjectCommaEnd if !self.read_value => {
-                ss.sink.pop_into_map();
+                ss.pop_into_map();
                 self.state = TopState::ObjectKeyEnd;
             },
             TopState::ArrayCommaEnd if !self.read_value => {
-                ss.sink.pop_into_array();
+                ss.pop_into_array();
                 self.read_value = true;
             },
             TopState::Number(context) => {
@@ -269,11 +261,11 @@ impl ParserState {
                 }
                 match self.state {
                     TopState::ObjectCommaEnd => {
-                        ss.sink.pop_into_map();
+                        ss.pop_into_map();
                         self.state = TopState::ObjectKeyEnd;
                     },
                     TopState::ArrayCommaEnd => {
-                        ss.sink.pop_into_array();
+                        ss.pop_into_array();
                         self.read_value = true;
                     },
                     _ => return unexpected!(ss, Unexpected::Comma),
@@ -285,7 +277,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_colon<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_colon<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("colon");
 
         match self.state {
@@ -299,7 +291,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_exponent<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_exponent<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("exponent");
 
         if !matches!(self.state, TopState::Number(_)) {
@@ -315,7 +307,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_dot<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_dot<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("dot");
 
         if !matches!(self.state, TopState::Number(_))
@@ -327,7 +319,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_sign<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, sign: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_sign<SS>(&mut self, ss: &mut SS, sign: bool) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("sign");
 
         match self.state {
@@ -353,7 +345,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_number<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_number<SS>(&mut self, ss: &mut SS, range: Range) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("number");
 
         match self.state {
@@ -369,7 +361,7 @@ impl ParserState {
                     },
                     NumberState::ExponentSign | NumberState::Exponent => {
                         self.number_data.exponent = Some(range);
-                        ss.sink.push_number(self.number_data.clone());
+                        ss.push_number(self.number_data.clone());
                         self.state = match context {
                             TopStateContext::None => TopState::None,
                             TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
@@ -395,7 +387,7 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn token_bool<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, value: bool) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_bool<SS>(&mut self, ss: &mut SS, value: bool) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("bool");
 
         if !self.read_value {
@@ -403,12 +395,12 @@ impl ParserState {
         }
         self.read_value = false;
 
-        ss.sink.push_bool(value);
+        ss.push_bool(value);
 
         Ok(())
     }
 
-    pub fn token_null<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_null<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("null");
 
         if !self.read_value {
@@ -416,12 +408,12 @@ impl ParserState {
         }
         self.read_value = false;
 
-        ss.sink.push_null();
+        ss.push_null();
 
         Ok(())
     }
 
-    pub fn token_quote<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_quote<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("quote");
 
         match self.state {
@@ -432,7 +424,7 @@ impl ParserState {
                     TopStateContext::ObjectKey => TopState::ObjectColon,
                     TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
                 };
-                ss.sink.finalize_string();
+                ss.finalize_string();
             },
             _ => {
                 if !self.read_value && !(self.state == TopState::ObjectKeyEnd) {
@@ -441,7 +433,7 @@ impl ParserState {
 
                 self.read_value = false;
                 self.state = TopState::String(TopStateContext::from_topstate(self.state));
-                ss.sink.start_string();
+                ss.start_string();
             },
         }
 
@@ -449,26 +441,26 @@ impl ParserState {
     }
 
     // Tokenizer guarantees that these are only called between token_quotes.
-    pub fn token_string_range<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, range: Range) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_range<SS>(&mut self, ss: &mut SS, range: Range) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("string_range");
 
-        ss.sink.append_string_range(range);
+        ss.append_string_range(range);
         Ok(())
     }
-    pub fn token_string_single<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, byte: u8) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_single<SS>(&mut self, ss: &mut SS, byte: u8) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("string_single");
 
-        ss.sink.append_string_single(byte);
+        ss.append_string_single(byte);
         Ok(())
     }
-    pub fn token_string_codepoint<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>, codepoint: char) -> PResult<(), <Src as Source>::Bail> where Src: Source, Snk: Sink {
+    pub fn token_string_codepoint<SS>(&mut self, ss: &mut SS, codepoint: char) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("string_codepoint");
 
-        ss.sink.append_string_codepoint(codepoint);
+        ss.append_string_codepoint(codepoint);
         Ok(())
     }
 
-    pub fn finish<Src, Snk>(&mut self, ss: &mut SS<Src, Snk>) where Src: Source, Snk: Sink {
+    pub fn finish<SS>(&mut self, ss: &mut SS) where SS: Source + Sink + Bailable {
         if self.state == TopState::Number(TopStateContext::None) {
             self.handle_end_number(ss, TopStateContext::None);
         }

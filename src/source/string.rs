@@ -1,4 +1,5 @@
-use super::{Source, SourceError};
+use super::{Source, PeekResult};
+use ::Bailable;
 use ::PResult;
 use ::input::Pos;
 use ::error::ParseError;
@@ -21,8 +22,11 @@ impl VecSource {
 
 }
 
-impl Source for VecSource {
+impl Bailable for VecSource {
     type Bail = ();
+}
+
+impl Source for VecSource {
 
     fn position(&self) -> Pos {
         self.pos.into()
@@ -32,12 +36,12 @@ impl Source for VecSource {
         self.pos += num;
     }
 
-    fn peek_char(&self) -> Result<u8, SourceError<Self::Bail>> {
+    fn peek_char(&self) -> PeekResult<Self::Bail> {
         if self.pos >= self.vec.len() {
-            Err(SourceError::Eof)
+            PeekResult::Eof
         } else {
             let character = self.vec[self.pos];
-            Ok(character)
+            PeekResult::Ok(character)
         }
     }
 
@@ -65,8 +69,11 @@ impl VecSourceB {
 
 }
 
-impl Source for VecSourceB {
+impl Bailable for VecSourceB {
     type Bail = ();
+}
+
+impl Source for VecSourceB {
 
     fn position(&self) -> Pos {
         (*self.pos.lock().unwrap()).into()
@@ -76,18 +83,18 @@ impl Source for VecSourceB {
         *self.pos.lock().unwrap() += num;
     }
 
-    fn peek_char(&self) -> Result<u8, SourceError<Self::Bail>> {
+    fn peek_char(&self) -> PeekResult<Self::Bail> {
         let mut pos = self.pos.lock().unwrap();
 
         if *pos >= self.vec.len() {
-            Err(SourceError::Eof)
+            PeekResult::Eof
         } else {
             let character = self.vec[*pos];
             if character == b'&' {
                 *pos += 1;
-                Err(SourceError::Bail(()))
+                PeekResult::Bail(())
             } else {
-                Ok(character)
+                PeekResult::Ok(character)
             }
         }
     }

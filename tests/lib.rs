@@ -2,12 +2,12 @@ extern crate iterative_json_parser;
 use iterative_json_parser::source::string::VecSource;
 use iterative_json_parser::Parser;
 use iterative_json_parser::ParseError;
-use iterative_json_parser::SS;
+use iterative_json_parser::input::{SourceSink, BailVariant};
 
 use iterative_json_parser::sink::into_enum::{EnumSink, Json};
 
-fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<()>> {
-    let mut ss = SS {
+fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<BailVariant<(), ()>>> {
+    let mut ss = SourceSink {
         source: VecSource::new(data_bytes.to_vec()),
         sink: EnumSink::new(data_bytes),
     };

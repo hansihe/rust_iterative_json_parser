@@ -2,7 +2,6 @@
 #[cfg(all(feature = "use_simd", target_feature = "sse2", target_feature = "ssse3"))]
 extern crate simd;
 
-
 pub mod parser;
 pub mod tokenizer;
 pub mod sink;
@@ -15,12 +14,14 @@ mod utf8;
 pub use error::{ParseError, Unexpected};
 
 pub use input::{Range, Pos};
-pub use source::{Source, SourceError};
+pub use source::{Source, PeekResult};
 pub use sink::Sink;
 
 
 pub use parser::NumberData;
-pub use tokenizer::{TokenizerState, SS};
+pub use tokenizer::{TokenizerState};
 pub use TokenizerState as Parser;
+
+pub use input::{Bailable, SourceSink, BailVariant};
 
 pub type PResult<T, SourceBail> = Result<T, ParseError<SourceBail>>;

@@ -1,10 +1,11 @@
+use ::Bailable;
 use ::input::Range;
 pub use ::parser::NumberData;
 
 pub mod debug_print;
 pub mod into_enum;
 
-pub trait Sink {
+pub trait Sink: Bailable {
     fn push_map(&mut self);
     fn push_array(&mut self);
     fn push_number(&mut self, integer: NumberData);

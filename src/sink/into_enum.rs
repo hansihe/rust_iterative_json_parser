@@ -1,3 +1,4 @@
+use ::Bailable;
 use super::{Sink, NumberData};
 use ::input::Range;
 
@@ -45,6 +46,10 @@ impl<'a> EnumSink<'a> {
         }
         self.stack.pop().unwrap()
     }
+}
+
+impl<'a> Bailable for EnumSink<'a> {
+    type Bail = ();
 }
 
 impl<'a> Sink for EnumSink<'a> {
