@@ -79,16 +79,19 @@ impl TokenizerState {
 
         loop {
             state = utf8::decode(state, curr_char);
+
             match state {
-                utf8::UTF8_REJECT =>
-                    return unexpected!(ss, Unexpected::InvalidUtf8),
-                utf8::UTF8_SPECIAL =>
-                    break,
+                utf8::UTF8_REJECT => {
+                    return unexpected!(ss, Unexpected::InvalidUtf8);
+                },
+                utf8::UTF8_SPECIAL => {
+                    self.string_state = StringState::None(state);
+                    return Ok(state);
+                },
                 _ => (),
             }
 
             ss.skip(1);
-
             curr_char = match ss.peek_char() {
                 PeekResult::Ok(character) => character,
                 PeekResult::Eof =>
@@ -103,8 +106,6 @@ impl TokenizerState {
             };
         }
 
-        self.string_state = StringState::None(state);
-        Ok(state)
     }
 
     // Continues processing on a string value in the JSON.
@@ -304,10 +305,6 @@ impl TokenizerState {
             }
         }
     }
-
-    //pub fn run<Io>(&mut self, io: &mut Io) -> PResult<(), Io::Bail> where Io: SourceSink {
-
-    //}
 
     pub fn run<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         match self.do_run(ss) {

@@ -1,34 +1,50 @@
 extern crate iterative_json_parser;
-use iterative_json_parser::source::string::VecSource;
+use iterative_json_parser::source::string::{VecSource, VecSourceB};
 use iterative_json_parser::Parser;
 use iterative_json_parser::ParseError;
 use iterative_json_parser::input::{SourceSink, BailVariant};
+use iterative_json_parser::{Source, Sink};
 
 use iterative_json_parser::sink::into_enum::{EnumSink, Json};
 
-fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<BailVariant<(), ()>>> {
-    let mut ss = SourceSink {
-        source: VecSource::new(data_bytes.to_vec()),
-        sink: EnumSink::new(data_bytes),
-    };
-
+fn parse_to_enum_inner<Src>(mut ss: SourceSink<Src, EnumSink>, print: bool) -> Result<Json, ParseError<BailVariant<Src::Bail, ()>>> where Src: Source {
     let mut parser = Parser::new();
-
     loop {
         match parser.run(&mut ss) {
             Ok(()) => {
-                println!("Internal state: {:?}", parser);
-                println!("Sink stack: {:?}", ss.sink.stack);
+                if print {
+                    println!("Internal state: {:?}", parser);
+                    println!("Sink stack: {:?}", ss.sink.stack);
+                }
                 return Ok(ss.sink.to_result());
             },
             Err(ParseError::SourceBail(_)) => continue,
             Err(err) => {
-                println!("Internal state: {:?}", parser);
-                println!("Sink stack: {:?}", ss.sink.stack);
+                if print {
+                    println!("Internal state: {:?}", parser);
+                    println!("Sink stack: {:?}", ss.sink.stack);
+                }
                 return Err(err);
             },
         }
-    }
+    };
+}
+
+fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<BailVariant<(), ()>>> {
+    let mut bailing_ss = SourceSink {
+        source: VecSourceB::new(data_bytes.to_vec()),
+        sink: EnumSink::new(data_bytes),
+    };
+    let bailing_result = parse_to_enum_inner(bailing_ss, false);
+
+    let mut ss = SourceSink {
+        source: VecSource::new(data_bytes.to_vec()),
+        sink: EnumSink::new(data_bytes),
+    };
+    let result = parse_to_enum_inner(ss, true);
+
+    assert_eq!(bailing_result, result);
+    return result;
 }
 
 macro_rules! o {
@@ -252,12 +268,13 @@ fn json_checker_test_suite() {
 
     // Fail cases
     for num in 1..34 {
-        println!("current: fail{}.json", num);
+        println!("======== current: fail{}.json ========", num);
         let mut file = File::open(format!("tests/data/fail{}.json", num)).unwrap();
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).unwrap();
 
         let result = parse_to_enum(&buf);
+        println!("result: {:?}", result);
         if !ACCEPTABLE_SUCCESSES.contains(&num) {
             assert!(result.is_err());
         }
@@ -265,12 +282,13 @@ fn json_checker_test_suite() {
 
     // Pass cases
     for num in 1..4 {
-        println!("current: pass{}.json", num);
+        println!("======== current: pass{}.json ========", num);
         let mut file = File::open(format!("tests/data/pass{}.json", num)).unwrap();
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).unwrap();
 
         let result = parse_to_enum(&buf);
+        println!("result: {:?}", result);
         assert!(result.is_ok());
     }
 

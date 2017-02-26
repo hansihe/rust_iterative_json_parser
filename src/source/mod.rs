@@ -13,6 +13,6 @@ pub enum PeekResult<Bail> {
 pub trait Source: Bailable {
     fn position(&self) -> Pos;
     fn skip(&mut self, num: usize);
-    fn peek_char(&self) -> PeekResult<Self::Bail>;
+    fn peek_char(&mut self) -> PeekResult<Self::Bail>;
     fn peek_slice<'a>(&'a self, length: usize) -> Option<&'a [u8]>;
 }

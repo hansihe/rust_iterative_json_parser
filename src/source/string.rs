@@ -1,9 +1,6 @@
 use super::{Source, PeekResult};
 use ::Bailable;
-use ::PResult;
 use ::input::Pos;
-use ::error::ParseError;
-use ::std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct VecSource {
@@ -36,7 +33,7 @@ impl Source for VecSource {
         self.pos += num;
     }
 
-    fn peek_char(&self) -> PeekResult<Self::Bail> {
+    fn peek_char(&mut self) -> PeekResult<Self::Bail> {
         if self.pos >= self.vec.len() {
             PeekResult::Eof
         } else {
@@ -55,7 +52,8 @@ impl Source for VecSource {
 #[derive(Debug)]
 pub struct VecSourceB {
     vec: Vec<u8>,
-    pos: Mutex<usize>,
+    pos: usize,
+    bailed: bool,
 }
 
 impl VecSourceB {
@@ -63,7 +61,8 @@ impl VecSourceB {
     pub fn new(vec: Vec<u8>) -> VecSourceB {
         VecSourceB {
             vec: vec,
-            pos: Mutex::new(0),
+            pos: 0,
+            bailed: false,
         }
     }
 
@@ -76,25 +75,25 @@ impl Bailable for VecSourceB {
 impl Source for VecSourceB {
 
     fn position(&self) -> Pos {
-        (*self.pos.lock().unwrap()).into()
+        self.pos.into()
     }
 
     fn skip(&mut self, num: usize) {
-        *self.pos.lock().unwrap() += num;
+        self.pos += num;
+        self.bailed = false;
     }
 
-    fn peek_char(&self) -> PeekResult<Self::Bail> {
-        let mut pos = self.pos.lock().unwrap();
-
-        if *pos >= self.vec.len() {
-            PeekResult::Eof
+    fn peek_char(&mut self) -> PeekResult<Self::Bail> {
+        if !self.bailed {
+            self.bailed = true;
+            PeekResult::Bail(())
         } else {
-            let character = self.vec[*pos];
-            if character == b'&' {
-                *pos += 1;
-                PeekResult::Bail(())
+            let pos = self.pos;
+
+            if pos >= self.vec.len() {
+                PeekResult::Eof
             } else {
-                PeekResult::Ok(character)
+                PeekResult::Ok(self.vec[pos])
             }
         }
     }

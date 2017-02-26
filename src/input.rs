@@ -72,7 +72,7 @@ impl<Src, Snk> Source for SourceSink<Src, Snk>
         self.source.skip(num)
     }
     #[inline(always)]
-    fn peek_char(&self) -> PeekResult<BailVariant<Src::Bail, Snk::Bail>> {
+    fn peek_char(&mut self) -> PeekResult<BailVariant<Src::Bail, Snk::Bail>> {
         match self.source.peek_char() {
             PeekResult::Ok(num) => PeekResult::Ok(num),
             PeekResult::Eof => PeekResult::Eof,
