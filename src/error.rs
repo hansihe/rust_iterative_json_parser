@@ -3,6 +3,7 @@ use ::input::Pos;
 #[derive(Debug, PartialEq)]
 pub enum ParseError<SourceBail> {
     Unexpected(Pos, Unexpected),
+    End,
 
     // Indicators from Source.
     // Does not actually signal errors.

@@ -1,6 +1,6 @@
 use ::parser::NumberData;
 use ::source::{Source, PeekResult};
-use ::sink::Sink;
+use ::sink::{Sink, Position, StringPosition};
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Pos(pub usize);
@@ -87,34 +87,44 @@ impl<Src, Snk> Source for SourceSink<Src, Snk>
     }
 }
 
+macro_rules! lift_bail {
+    ($e:expr) => {
+        match $e {
+            Ok(()) => Ok(()),
+            Err(bail) => Err(BailVariant::Sink(bail)),
+        }
+    };
+}
+
+
 impl<Src, Snk> Sink for SourceSink<Src, Snk>
     where Src: Source,
           Snk: Sink
 {
     #[inline(always)]
-    fn push_map(&mut self) {
-        self.sink.push_map()
+    fn push_map(&mut self, pos: Position) {
+        self.sink.push_map(pos)
     }
     #[inline(always)]
-    fn push_array(&mut self) {
-        self.sink.push_array()
+    fn push_array(&mut self, pos: Position) {
+        self.sink.push_array(pos)
     }
     #[inline(always)]
-    fn push_number(&mut self, integer: NumberData) {
-        self.sink.push_number(integer)
+    fn push_number(&mut self, pos: Position, integer: NumberData) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.push_number(pos, integer))
     }
     #[inline(always)]
-    fn push_bool(&mut self, boolean: bool) {
-        self.sink.push_bool(boolean)
+    fn push_bool(&mut self, pos: Position, boolean: bool) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.push_bool(pos, boolean))
     }
     #[inline(always)]
-    fn push_null(&mut self) {
-        self.sink.push_null()
+    fn push_null(&mut self, pos: Position) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.push_null(pos))
     }
 
     #[inline(always)]
-    fn start_string(&mut self) {
-        self.sink.start_string()
+    fn start_string(&mut self, pos: StringPosition) {
+        self.sink.start_string(pos)
     }
     #[inline(always)]
     fn append_string_range(&mut self, string: Range) {
@@ -129,17 +139,17 @@ impl<Src, Snk> Sink for SourceSink<Src, Snk>
         self.sink.append_string_codepoint(codepoint)
     }
     #[inline(always)]
-    fn finalize_string(&mut self) {
-        self.sink.finalize_string()
+    fn finalize_string(&mut self, pos: StringPosition) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.finalize_string(pos))
     }
 
     #[inline(always)]
-    fn finalize_array(&mut self) {
-        self.sink.finalize_array()
+    fn finalize_array(&mut self, pos: Position) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.finalize_array(pos))
     }
     #[inline(always)]
-    fn finalize_map(&mut self) {
-        self.sink.finalize_map()
+    fn finalize_map(&mut self, pos: Position) -> Result<(), Self::Bail> {
+        lift_bail!(self.sink.finalize_map(pos))
     }
     #[inline(always)]
     fn pop_into_array(&mut self) {

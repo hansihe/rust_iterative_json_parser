@@ -77,6 +77,41 @@ impl TokenizerState {
         let mut curr_char = initial_character;
         let mut state = init_state;
 
+        //const CHUNK_SIZE: usize = 64;
+
+        //let mut num;
+        //'outer: loop {
+        //    num = 0;
+        //    {
+        //        let slice = match ss.peek_slice(CHUNK_SIZE) {
+        //            Some(slice) => slice,
+        //            None => break 'outer,
+        //        };
+
+        //        'inner: while num < CHUNK_SIZE {
+        //            state = utf8::decode(state, slice[num]);
+        //            match state {
+        //                utf8::UTF8_REJECT | utf8::UTF8_SPECIAL => {
+        //                    break 'inner;
+        //                },
+        //                _ => (),
+        //            }
+        //            num += 1;
+        //        }
+        //    }
+        //    ss.skip(num);
+        //    match state {
+        //        utf8::UTF8_REJECT => {
+        //            return unexpected!(ss, Unexpected::InvalidUtf8);
+        //        },
+        //        utf8::UTF8_SPECIAL => {
+        //            self.string_state = StringState::None(state);
+        //            return Ok(state);
+        //        },
+        //        _ => (),
+        //    }
+        //}
+
         loop {
             state = utf8::decode(state, curr_char);
 
@@ -157,7 +192,8 @@ impl TokenizerState {
                 },
 
                 (StringState::End, _) => {
-                    break;
+                    self.state = TokenState::None;
+                    return self.parser.token_quote(ss);
                 },
 
                 // The last character was a backslash.
@@ -226,9 +262,6 @@ impl TokenizerState {
                     return Err(ParseError::SourceBail(bt)),
             }
         }
-
-        self.state = TokenState::None;
-        self.parser.token_quote(ss)
     }
 
     fn do_num<SS>(&mut self, ss: &mut SS, start: Pos) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
@@ -256,12 +289,8 @@ impl TokenizerState {
     fn do_run<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         loop {
             match self.state {
-                TokenState::String => {
-                    self.do_str(ss)?;
-                },
-                TokenState::Number(start) => {
-                    self.do_num(ss, start)?;
-                },
+                TokenState::String => self.do_str(ss)?,
+                TokenState::Number(start) => self.do_num(ss, start)?,
                 TokenState::None => {
                     self.skip_whitespace(ss)?;
 
@@ -307,18 +336,42 @@ impl TokenizerState {
     }
 
     pub fn run<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
-        match self.do_run(ss) {
-            Ok(()) => unreachable!(),
-            Err(ParseError::Eof) => {
-                self.parser.finish(ss);
-                if self.parser.finished() {
+        self.parser.reentry(ss)?;
+
+        if self.parser.finished() {
+            Ok(())
+        } else {
+            match self.do_run(ss) {
+                Ok(()) => unreachable!(),
+                Err(ParseError::End) => {
+                    self.parser.finish(ss)?;
                     Ok(())
-                } else {
-                    unexpected!(ss, Unexpected::Eof)
-                }
-            },
-            Err(err) => Err(err),
+                },
+                Err(ParseError::Eof) => unexpected!(ss, Unexpected::Eof),
+                err => err,
+            }
         }
+
+        //if !self.finished {
+        //    match self.do_run(ss) {
+        //        Ok(()) => unreachable!(),
+        //        Err(ParseError::Eof) => {
+        //            self.finished = true;
+        //            self.parser.finish(ss)?;
+        //        },
+        //        Err(err) => return Err(err),
+        //    }
+        //}
+
+        //if self.finished {
+        //    if self.parser.finished() {
+        //        return Ok(());
+        //    } else {
+        //        return unexpected!(ss, Unexpected::Eof);
+        //    }
+        //}
+
+        //unreachable!();
     }
 
 }

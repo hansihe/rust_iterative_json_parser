@@ -15,8 +15,7 @@ pub use error::{ParseError, Unexpected};
 
 pub use input::{Range, Pos};
 pub use source::{Source, PeekResult};
-pub use sink::Sink;
-
+pub use sink::{Sink, Position, StringPosition};
 
 pub use parser::NumberData;
 pub use tokenizer::{TokenizerState};

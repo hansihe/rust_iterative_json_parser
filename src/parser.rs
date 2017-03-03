@@ -1,11 +1,11 @@
 use ::PResult;
 use ::Bailable;
-use ::sink::Sink;
+use ::sink::{Sink, Position, StringPosition};
 use ::error::{ParseError, Unexpected};
 use ::input::Range;
 use ::source::Source;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum NumberState {
     Integer, // Integer
     DotExponentEnd, // '.' or end
@@ -15,7 +15,7 @@ enum NumberState {
     Exponent, // Exponent then end
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NumberData {
     pub sign: bool,
     pub integer: Range,
@@ -35,13 +35,21 @@ impl Default for NumberData {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ReentryAction {
+    None,
+    FinishObjectClose,
+    FinishArrayClose,
+    FinishNumberComma,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum StackState {
     Array,
     Object,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum TopState {
     None,
 
@@ -55,7 +63,7 @@ enum TopState {
     String(TopStateContext),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum TopStateContext {
     None,
     ObjectKey,
@@ -72,6 +80,14 @@ impl TopStateContext {
             _ => unreachable!(),
         }
     }
+    fn string_position(&self) -> StringPosition {
+        match *self {
+            TopStateContext::ObjectKey => StringPosition::MapKey,
+            TopStateContext::ObjectValue => StringPosition::MapValue,
+            TopStateContext::ArrayValue => StringPosition::ArrayValue,
+            TopStateContext::None => StringPosition::Root,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -80,6 +96,8 @@ pub struct ParserState {
 
     state: TopState,
     read_value: bool,
+    reentry_action: ReentryAction,
+    started: bool,
 
     number_state: NumberState,
     number_data: NumberData,
@@ -87,6 +105,23 @@ pub struct ParserState {
 
 macro_rules! unexpected {
     ($ss:expr, $reason:expr) => { Err(ParseError::Unexpected($ss.position(), $reason)) }
+}
+
+macro_rules! lift_bail {
+    ($bailing:expr) => {
+        match $bailing {
+            Ok(inner) => Ok(inner),
+            Err(bail) => Err(ParseError::SourceBail(bail)),
+        }
+    };
+}
+macro_rules! lift_bail_sink {
+    ($bailing:expr) => {
+        match $bailing {
+            Ok(inner) => Ok(inner),
+            Err(bail) => Err(ParseError::SourceBail(bail)),
+        }
+    };
 }
 
 macro_rules! matches {
@@ -110,40 +145,55 @@ impl ParserState {
             stack: vec![],
 
             state: TopState::None,
-            read_value: true,
+            read_value: false,
+            reentry_action: ReentryAction::None,
+            started: false,
 
             number_state: NumberState::Integer,
             number_data: NumberData::default(),
         }
     }
 
-    fn handle_end_number<SS>(&mut self, ss: &mut SS, next: TopStateContext) -> bool where SS: Source + Sink + Bailable {
+    fn get_position(&self) -> Position {
+        match self.stack.last() {
+            None => Position::Root,
+            Some(&StackState::Object) => Position::MapValue,
+            Some(&StackState::Array) => Position::ArrayValue,
+        }
+    }
+
+    fn handle_end_number<SS>(&mut self, ss: &mut SS, position: Position, next: TopStateContext, unexpected: Unexpected) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         if self.number_state != NumberState::ExponentStartEnd
             && self.number_state != NumberState::DotExponentEnd {
-                return false;
+                return unexpected!(ss, unexpected);
             }
 
-        ss.push_number(self.number_data.clone());
-
         self.state = match next {
-            TopStateContext::None => TopState::None,
+            TopStateContext::None => {
+                self.state = TopState::None;
+                lift_bail_sink!(ss.push_number(position, self.number_data.clone()))?;
+                return Err(ParseError::End);
+            },
             TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
             TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
             TopStateContext::ObjectKey => unreachable!(),
         };
 
-        true
+        lift_bail_sink!(ss.push_number(position, self.number_data.clone()))?;
+
+        Ok(())
     }
 
     pub fn token_object_open<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("object_open");
 
-        if !self.read_value {
+        if !self.read_value && self.state != TopState::None {
             return unexpected!(ss, Unexpected::ObjectOpen);
         }
         self.read_value = false;
+        self.started = true;
 
-        ss.push_map();
+        ss.push_map(self.get_position());
         self.stack.push(StackState::Object);
         self.state = TopState::ObjectKeyEnd;
         Ok(())
@@ -152,12 +202,13 @@ impl ParserState {
     pub fn token_array_open<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
         log_token("array_open");
 
-        if !self.read_value {
+        if !self.read_value && self.state != TopState::None {
             return unexpected!(ss, Unexpected::ArrayOpen);
         }
         self.read_value = true;
+        self.started = true;
 
-        ss.push_array();
+        ss.push_array(self.get_position());
         self.stack.push(StackState::Array);
         self.state = TopState::ArrayCommaEnd;
         Ok(())
@@ -173,39 +224,53 @@ impl ParserState {
             // trailing commas,
             TopState::ObjectKeyEnd | TopState::ObjectCommaEnd | TopState::Number(TopStateContext::ObjectValue) => {
                 if let TopState::Number(context) = self.state {
-                    if !self.handle_end_number(ss, context) {
-                        return unexpected!(ss, Unexpected::ObjectClose);
+                    match self.handle_end_number(ss, Position::MapValue, context, Unexpected::ObjectClose) {
+                        Ok(()) => (),
+                        Err(err) => {
+                            self.reentry_action = ReentryAction::FinishObjectClose;
+                            return Err(err);
+                        },
                     }
                 }
 
-                // If the read_value flag is not set, it means we just read in a value
-                // and need to pop_into_map.
-                if !self.read_value && self.state == TopState::ObjectCommaEnd {
-                    ss.pop_into_map();
-                }
-
-                if self.read_value && self.state == TopState::ObjectCommaEnd {
-                    return unexpected!(ss, Unexpected::ObjectClose);
-                }
-
-                self.read_value = false;
-                ss.finalize_map();
-
-                // Because it is impossible to end up in a TopState::Object* without
-                // the top value on the stack being an StackState::Object, we can be
-                // sure that there is a value for us to pop, and that it, in fact, is
-                // a StackState::Object.
-                self.stack.pop().unwrap();
-
-                // Look at the last value on the stack to determine what our next state
-                // should be.
-                self.state = match self.stack.last() {
-                    Some(&StackState::Object) => TopState::ObjectCommaEnd,
-                    Some(&StackState::Array) => TopState::ArrayCommaEnd,
-                    None => TopState::None,
-                };
+                self.finish_object_close(ss)?;
             },
             _ => return unexpected!(ss, Unexpected::ObjectClose),
+        }
+
+        Ok(())
+    }
+
+    pub fn finish_object_close<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
+        if self.read_value && self.state == TopState::ObjectCommaEnd {
+            return unexpected!(ss, Unexpected::ObjectClose);
+        }
+
+        // If the read_value flag is not set, it means we just read in a value
+        // and need to pop_into_map.
+        if !self.read_value && self.state == TopState::ObjectCommaEnd {
+            ss.pop_into_map();
+        }
+
+        self.read_value = false;
+
+        // Because it is impossible to end up in a TopState::Object* without
+        // the top value on the stack being an StackState::Object, we can be
+        // sure that there is a value for us to pop, and that it, in fact, is
+        // a StackState::Object.
+        self.stack.pop().unwrap();
+
+        // Look at the last value on the stack to determine what our next state
+        // should be.
+        self.state = match self.stack.last() {
+            Some(&StackState::Object) => TopState::ObjectCommaEnd,
+            Some(&StackState::Array) => TopState::ArrayCommaEnd,
+            None => TopState::None,
+        };
+
+        lift_bail_sink!(ss.finalize_map(self.get_position()))?;
+        if self.stack.len() == 0 {
+            return Err(ParseError::End);
         }
 
         Ok(())
@@ -217,27 +282,40 @@ impl ParserState {
         match self.state {
             TopState::ArrayCommaEnd | TopState::Number(TopStateContext::ArrayValue) => {
                 if let TopState::Number(context) = self.state {
-                    if !self.handle_end_number(ss, context) {
-                        return unexpected!(ss, Unexpected::ObjectClose);
+                    match self.handle_end_number(ss, Position::ArrayValue, context, Unexpected::ObjectClose) {
+                        Ok(()) => (),
+                        Err(err) => {
+                            self.reentry_action = ReentryAction::FinishArrayClose;
+                            return Err(err);
+                        },
                     }
                 }
-
-                if !self.read_value {
-                    ss.pop_into_array();
-                }
-                self.read_value = false;
-
-                ss.finalize_array();
-
-                self.stack.pop().unwrap();
-
-                self.state = match self.stack.last() {
-                    Some(&StackState::Object) => TopState::ObjectCommaEnd,
-                    Some(&StackState::Array) => TopState::ArrayCommaEnd,
-                    None => TopState::None,
-                };
+                self.finish_array_close(ss)?;
             },
             _ => return unexpected!(ss, Unexpected::ObjectClose),
+        }
+
+        Ok(())
+    }
+
+    pub fn finish_array_close<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
+        if !self.read_value {
+            ss.pop_into_array();
+        }
+
+        self.read_value = false;
+
+        self.stack.pop().unwrap();
+
+        self.state = match self.stack.last() {
+            Some(&StackState::Object) => TopState::ObjectCommaEnd,
+            Some(&StackState::Array) => TopState::ArrayCommaEnd,
+            None => TopState::None,
+        };
+
+        lift_bail_sink!(ss.finalize_array(self.get_position()))?;
+        if self.stack.len() == 0 {
+            return Err(ParseError::End);
         }
 
         Ok(())
@@ -248,32 +326,42 @@ impl ParserState {
 
         match self.state {
             TopState::ObjectCommaEnd if !self.read_value => {
-                ss.pop_into_map();
                 self.state = TopState::ObjectKeyEnd;
+                ss.pop_into_map();
             },
             TopState::ArrayCommaEnd if !self.read_value => {
-                ss.pop_into_array();
                 self.read_value = true;
+                ss.pop_into_array();
             },
             TopState::Number(context) => {
-                if !self.handle_end_number(ss, context) {
-                    return unexpected!(ss, Unexpected::Comma);
-                }
-                match self.state {
-                    TopState::ObjectCommaEnd => {
-                        ss.pop_into_map();
-                        self.state = TopState::ObjectKeyEnd;
+                let position = self.get_position();
+                match self.handle_end_number(ss, position, context, Unexpected::Comma) {
+                    Ok(()) => (),
+                    Err(err) => {
+                        self.reentry_action = ReentryAction::FinishNumberComma;
+                        return Err(err);
                     },
-                    TopState::ArrayCommaEnd => {
-                        ss.pop_into_array();
-                        self.read_value = true;
-                    },
-                    _ => return unexpected!(ss, Unexpected::Comma),
                 }
+                self.finish_number_token_comma(ss)?;
             },
             _ => return unexpected!(ss, Unexpected::Comma),
         }
 
+        Ok(())
+    }
+
+    pub fn finish_number_token_comma<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
+        match self.state {
+            TopState::ObjectCommaEnd => {
+                self.state = TopState::ObjectKeyEnd;
+                ss.pop_into_map();
+            },
+            TopState::ArrayCommaEnd => {
+                self.read_value = true;
+                ss.pop_into_array();
+            },
+            _ => return unexpected!(ss, Unexpected::Comma),
+        }
         Ok(())
     }
 
@@ -361,13 +449,16 @@ impl ParserState {
                     },
                     NumberState::ExponentSign | NumberState::Exponent => {
                         self.number_data.exponent = Some(range);
-                        ss.push_number(self.number_data.clone());
                         self.state = match context {
-                            TopStateContext::None => TopState::None,
+                            TopStateContext::None => {
+                                lift_bail_sink!(ss.push_number(self.get_position(), self.number_data.clone()))?;
+                                return Err(ParseError::End);
+                            }
                             TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
                             TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
                             TopStateContext::ObjectKey => unreachable!(),
                         };
+                        lift_bail_sink!(ss.push_number(self.get_position(), self.number_data.clone()))?;
                     },
                     _ => return unexpected!(ss, Unexpected::Number),
                 }
@@ -395,7 +486,10 @@ impl ParserState {
         }
         self.read_value = false;
 
-        ss.push_bool(value);
+        lift_bail_sink!(ss.push_bool(self.get_position(), value))?;
+        if self.stack.len() == 0 {
+            return Err(ParseError::End);
+        }
 
         Ok(())
     }
@@ -408,7 +502,10 @@ impl ParserState {
         }
         self.read_value = false;
 
-        ss.push_null();
+        lift_bail_sink!(ss.push_null(self.get_position()))?;
+        if self.stack.len() == 0 {
+            return Err(ParseError::End);
+        }
 
         Ok(())
     }
@@ -419,12 +516,16 @@ impl ParserState {
         match self.state {
             TopState::String(context) => {
                 self.state = match context {
-                    TopStateContext::None => TopState::None,
+                    TopStateContext::None => {
+                        self.state = TopState::None;
+                        lift_bail_sink!(ss.finalize_string(context.string_position()))?;
+                        return Err(ParseError::End);
+                    },
                     TopStateContext::ArrayValue => TopState::ArrayCommaEnd,
                     TopStateContext::ObjectKey => TopState::ObjectColon,
                     TopStateContext::ObjectValue => TopState::ObjectCommaEnd,
                 };
-                ss.finalize_string();
+                lift_bail_sink!(ss.finalize_string(context.string_position()))?;
             },
             _ => {
                 if !self.read_value && !(self.state == TopState::ObjectKeyEnd) {
@@ -432,8 +533,9 @@ impl ParserState {
                 }
 
                 self.read_value = false;
-                self.state = TopState::String(TopStateContext::from_topstate(self.state));
-                ss.start_string();
+                let context = TopStateContext::from_topstate(self.state);
+                self.state = TopState::String(context);
+                ss.start_string(context.string_position());
             },
         }
 
@@ -460,14 +562,27 @@ impl ParserState {
         Ok(())
     }
 
-    pub fn finish<SS>(&mut self, ss: &mut SS) where SS: Source + Sink + Bailable {
-        if self.state == TopState::Number(TopStateContext::None) {
-            self.handle_end_number(ss, TopStateContext::None);
+    pub fn reentry<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
+        let action = self.reentry_action;
+        self.reentry_action = ReentryAction::None;
+        match action {
+            ReentryAction::FinishArrayClose => self.finish_array_close(ss)?,
+            ReentryAction::FinishObjectClose => self.finish_object_close(ss)?,
+            ReentryAction::FinishNumberComma => self.finish_number_token_comma(ss)?,
+            ReentryAction::None => (),
         }
+        Ok(())
+    }
+
+    pub fn finish<SS>(&mut self, ss: &mut SS) -> PResult<(), SS::Bail> where SS: Source + Sink + Bailable {
+        if self.state == TopState::Number(TopStateContext::None) {
+            self.handle_end_number(ss, Position::Root, TopStateContext::None, Unexpected::Eof)?;
+        }
+        Ok(())
     }
 
     pub fn finished(&self) -> bool {
-        self.state == TopState::None && self.stack.len() == 0 && !self.read_value
+        self.state == TopState::None && self.stack.len() == 0 && !self.read_value && self.started
     }
 
 }
