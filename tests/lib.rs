@@ -30,23 +30,41 @@ fn parse_to_enum_inner<Src>(mut ss: SourceSink<Src, EnumSink>, print: bool) -> R
     };
 }
 
-fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<BailVariant<(), ()>>> {
-    println!("== Nonbailing ==");
+fn parse_to_enum_full_inner(data_bytes: &[u8], print: bool) -> Result<Json, ParseError<BailVariant<(), ()>>> {
+    if print {
+        println!("== Nonbailing ==");
+    }
     let mut ss = SourceSink {
         source: VecSource::new(data_bytes.to_vec()),
         sink: EnumSink::new(data_bytes),
     };
-    let result = parse_to_enum_inner(ss, true);
+    let result = parse_to_enum_inner(ss, print);
 
-    println!("== Bailing ==");
+    if print {
+        println!("== Bailing ==");
+    }
     let mut bailing_ss = SourceSink {
         source: VecSourceB::new(data_bytes.to_vec()),
         sink: EnumSink::new_bailing(data_bytes),
     };
-    let bailing_result = parse_to_enum_inner(bailing_ss, false);
+    let bailing_result = parse_to_enum_inner(bailing_ss, print);
 
     assert_eq!(bailing_result, result);
     return result;
+}
+
+fn parse_to_enum(data_bytes: &[u8]) -> Result<Json, ParseError<BailVariant<(), ()>>> {
+    parse_to_enum_full_inner(data_bytes, false)
+}
+fn parse_to_enum_print(data_bytes: &[u8], test_name: &str, expected: bool) -> Result<Json, ParseError<BailVariant<(), ()>>> {
+    let res = parse_to_enum_full_inner(data_bytes, false);
+    if res.is_ok() == expected {
+        res
+    } else {
+        println!("");
+        println!("{}", test_name);
+        parse_to_enum_full_inner(data_bytes, false)
+    }
 }
 
 macro_rules! o {
@@ -297,4 +315,104 @@ fn json_checker_test_suite() {
         assert!(result.is_ok());
     }
 
+}
+
+const JSON_TEST_SUITE_ACCEPTABLE_FAILS: [&'static str; 25] = [
+    // For now we parse stuff in stream mode. This means that we stop
+    // reading from the input as soon as we have a valid root JSON value.
+    // This should probably be a switch...
+    "n_object_trailing_comment.json",
+    "n_array_extra_close.json",
+    "n_structure_array_with_extra_array_close.json",
+    "n_structure_object_followed_by_closing_object.json",
+    "n_structure_object_with_trailing_garbage.json",
+    "n_object_trailing_comment_open.json",
+    "n_structure_trailing_#.json",
+    "n_array_comma_after_close.json",
+    "n_object_trailing_comment_slash_open.json",
+    "n_object_with_trailing_garbage.json",
+    "n_structure_array_trailing_garbage.json",
+    "n_object_trailing_comment_slash_open_incomplete.json",
+    "n_structure_double_array.json",
+
+    // Do not allow scalars as root values. This is because of streaming.
+    // Should probably be a switch as well?
+    "y_structure_string_empty.json",
+    "y_structure_lonely_string.json",
+    "y_structure_lonely_negative_real.json",
+    "y_structure_lonely_true.json",
+    "y_structure_lonely_false.json",
+    "y_structure_lonely_null.json",
+    "y_string_space.json",
+    "y_structure_lonely_int.json",
+
+    // We allow trailing commas. This is an "extension". I like trailing commas.
+    "n_object_trailing_comma.json",
+    "n_array_number_and_comma.json",
+    "n_array_extra_comma.json",
+
+    // Allow + in front of numbers. This is an "extension".
+    "n_number_+1.json",
+];
+
+#[test]
+fn json_test_suite() {
+    use ::std::fs;
+    use ::std::io::Read;
+
+    let paths = fs::read_dir("tests/data/json_test_suite/").unwrap();
+
+    let mut success = true;
+
+    for path_opt in paths {
+        let dir_entry = path_opt.unwrap();
+        let file_name = dir_entry.file_name();
+        let file_name_str = file_name.to_str().unwrap();
+        let test_name = format!("==== {} ====", file_name_str);
+
+        let can_fail = JSON_TEST_SUITE_ACCEPTABLE_FAILS.contains(&file_name_str);
+        if !can_fail {
+
+            let mut file = fs::File::open(dir_entry.path()).unwrap();
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+
+            match file_name_str.as_bytes()[0] {
+                b'y' => {
+                    let result = parse_to_enum_print(&mut buf, &test_name, true);
+                    match result {
+                        Ok(_) => (),
+                        Err(err) => {
+                            if !can_fail {
+                                success = false;
+                            } else {
+                                println!("ACCEPTABLE");
+                            }
+                            println!("Unexpected error: {:?} ({:?})", err, can_fail);
+                        },
+                    }
+                },
+                b'n' => {
+                    let result = parse_to_enum_print(&mut buf, &test_name, false);
+                    match result {
+                        Ok(res) => {
+                            if !can_fail {
+                                success = false;
+                            } else {
+                                println!("ACCEPTABLE");
+                            }
+                            println!("Unexpected ok: {:?} ({:?})", res, can_fail);
+                        },
+                        Err(_) => (),
+                    }
+                },
+                _ => {
+                    let result = parse_to_enum(&mut buf);
+                },
+            }
+
+        }
+    }
+
+    assert!(success);
 }
