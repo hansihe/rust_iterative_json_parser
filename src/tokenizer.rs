@@ -105,41 +105,6 @@ impl TokenizerState {
         let mut curr_char = initial_character;
         let mut state = init_state;
 
-        // const CHUNK_SIZE: usize = 64;
-
-        // let mut num;
-        // outer: loop {
-        //    num = 0;
-        //    {
-        //        let slice = match ss.peek_slice(CHUNK_SIZE) {
-        //            Some(slice) => slice,
-        //            None => break 'outer,
-        //        };
-
-        //        'inner: while num < CHUNK_SIZE {
-        //            state = utf8::decode(state, slice[num]);
-        //            match state {
-        //                utf8::UTF8_REJECT | utf8::UTF8_SPECIAL => {
-        //                    break 'inner;
-        //                },
-        //                _ => (),
-        //            }
-        //            num += 1;
-        //        }
-        //    }
-        //    ss.skip(num);
-        //    match state {
-        //        utf8::UTF8_REJECT => {
-        //            return unexpected!(ss, Unexpected::InvalidUtf8);
-        //        },
-        //        utf8::UTF8_SPECIAL => {
-        //            self.string_state = StringState::None(state);
-        //            return Ok(state);
-        //        },
-        //        _ => (),
-        //    }
-        //
-
         loop {
             state = utf8::decode(state, curr_char);
 
@@ -258,31 +223,14 @@ impl TokenizerState {
                     }
                 }
 
-                (StringState::StartUnicodeContinuation(StartContinuationState::Slash, lower), PeekResult::Ok(character)) => {
-                    match character {
-                        b'\\' => {
-                            self.string_state = StringState::StartUnicodeContinuation(StartContinuationState::Uchar, lower);
-                            ss.skip(1);
-                        }
-                        _ => return unexpected!(ss, Unexpected::InvalidEscape),
-                    }
-                }
-
-                (StringState::StartUnicodeContinuation(StartContinuationState::Uchar, lower), PeekResult::Ok(character)) => {
-                    match character {
-                        b'u' => {
-                            self.string_state = StringState::UnicodeEscape(4, 0, Some(lower));
-                            ss.skip(1);
-                        }
-                        _ => return unexpected!(ss, Unexpected::InvalidEscape),
-                    }
-                }
-
-                // We hit a unicode escape sigil, and need to 4ead the next n
-                // bytes (as hex) into a character.
+                // We hit the end of a unicode escape sequence that was not preceeded
+                // by a UTF-16 surrogate. Check if the codepoint is a surrogate, and
+                // keep going.
                 (StringState::UnicodeEscape(0, codepoint, None), PeekResult::Ok(_)) => {
                     if codepoint >= 0xd800 && codepoint <= 0xdbff {
-                        self.string_state = StringState::StartUnicodeContinuation(StartContinuationState::Slash, (codepoint - 0xd800) << 10);
+                        self.string_state =
+                            StringState::StartUnicodeContinuation(StartContinuationState::Slash,
+                                                                  (codepoint - 0xd800) << 10);
                     } else {
                         self.string_state = StringState::None(utf8::UTF8_ACCEPT);
                         self.string_start = ss.position();
@@ -293,6 +241,9 @@ impl TokenizerState {
                         }
                     }
                 }
+
+                // We hit the end of a unicode escape sequence that WAS preceeded by a
+                // UTF-16 surrogate. Join them and validate.
                 (StringState::UnicodeEscape(0, lower, Some(upper)), PeekResult::Ok(_)) => {
                     if lower >= 0xdc00 && lower <= 0xdfff {
                         self.string_state = StringState::None(utf8::UTF8_ACCEPT);
@@ -309,6 +260,8 @@ impl TokenizerState {
                     }
                 }
 
+                // We hit a unicode escape sigil, and need to 4ead the next n
+                // bytes (as hex) into a character.
                 (StringState::UnicodeEscape(ref mut count, ref mut codepoint, lower),
                  PeekResult::Ok(character)) => {
                     *codepoint <<= 4;
@@ -325,6 +278,29 @@ impl TokenizerState {
                     ss.skip(1);
                     self.string_state = StringState::UnicodeEscape(*count, *codepoint, lower);
                 }
+
+                (StringState::StartUnicodeContinuation(StartContinuationState::Slash, lower),
+                 PeekResult::Ok(character)) => {
+                    match character {
+                        b'\\' => {
+                            self.string_state = StringState::StartUnicodeContinuation(
+                                StartContinuationState::Uchar, lower);
+                            ss.skip(1);
+                        }
+                        _ => return unexpected!(ss, Unexpected::InvalidEscape),
+                    }
+                }
+                (StringState::StartUnicodeContinuation(StartContinuationState::Uchar, lower),
+                 PeekResult::Ok(character)) => {
+                    match character {
+                        b'u' => {
+                            self.string_state = StringState::UnicodeEscape(4, 0, Some(lower));
+                            ss.skip(1);
+                        }
+                        _ => return unexpected!(ss, Unexpected::InvalidEscape),
+                    }
+                }
+
 
                 // Errors
                 (_, PeekResult::Eof) => return unexpected!(ss, Unexpected::Eof),
